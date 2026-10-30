@@ -266,28 +266,13 @@
       callHooks("transport:changed");
     }
     const speedMult = () => 1 + 3 * Math.min(state.time / SPEED_RAMP_SECONDS, 1) + state.score * 0.03;
-    // Bullets fire on odd tempo beats at the nearest harmful target (bugs and blocker issues).
+    // Bullets fire on odd tempo beats in Mona's movement direction (last movement or facing when stationary); blocker issues absorb bullets.
     // Webs pull in beneficial pickups (commits, secret keys, powerup pickups) within WEB_RANGE.
     const BULLET_SPEED = 420, BULLET_R = 4, MONA_WIDTH = MONA_R * 2, WEB_RANGE = 6 * MONA_WIDTH, WEB_PULL = 260;
-    function nearestThreat(o = state) {
-      const s = state;
-      let target = null, best = Infinity;
-      for (const b of s.bugs) {
-        const d = Math.hypot(b.x - o.x, b.y - o.y);
-        if (d < best) { best = d; target = { x: b.x, y: b.y }; }
-      }
-      for (const k of s.blockers) {
-        const nx = Math.max(k.x, Math.min(k.x + BLOCKER_W, o.x)), ny = Math.max(k.y, Math.min(k.y + BLOCKER_H, o.y));
-        const d = Math.hypot(nx - o.x, ny - o.y);
-        if (d < best) { best = d; target = { x: k.x + BLOCKER_W / 2, y: k.y + BLOCKER_H / 2 }; }
-      }
-      return target;
-    }
+    const FACING_VECTORS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
     function shootFrom(o, copilot) {
-      const t = nearestThreat(o);
-      if (!t) return false;
-      const d = Math.hypot(t.x - o.x, t.y - o.y) || 1;
-      state.bullets.push({ x: o.x, y: o.y, vx: (t.x - o.x) / d * BULLET_SPEED, vy: (t.y - o.y) / d * BULLET_SPEED, copilot });
+      const [ax, ay] = state.aim || FACING_VECTORS[state.facing] || [0, 1];
+      state.bullets.push({ x: o.x, y: o.y, vx: ax * BULLET_SPEED, vy: ay * BULLET_SPEED, copilot });
       return true;
     }
     // Each Copilot follower fires alongside every shot Mona takes.
@@ -309,11 +294,7 @@
           continue;
         }
         const blocker = s.blockers.find((k) => u.x > k.x - BULLET_R && u.x < k.x + BLOCKER_W + BULLET_R && u.y > k.y - BULLET_R && u.y < k.y + BLOCKER_H + BULLET_R);
-        if (blocker) {
-          s.blockers = s.blockers.filter((k) => k !== blocker);
-          s.blasts.push({ x: blocker.x + BLOCKER_W / 2, y: blocker.y + BLOCKER_H / 2, t: 0.2, color: "88,166,255", scale: 0.8 });
-          continue;
-        }
+        if (blocker) continue; // blockers are indestructible; bullets are absorbed
         kept.push(u);
       }
       s.bullets = kept;
@@ -416,6 +397,7 @@
       tickPowerups(dt);
       updateWebs(dt);
       const moving = dx !== 0 || dy !== 0;
+      if (moving) s.aim = [dx, dy];
       if (moving && !reducedMotion.matches) {
         s.walkBeat += dt;
         if (s.walkBeat >= WALK_BEAT) {
