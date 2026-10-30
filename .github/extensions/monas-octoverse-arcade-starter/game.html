@@ -60,7 +60,8 @@
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Dodge the green Blocker issue review cards! Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Catch a falling Copilot head and it follows Mona, absorbing one fatal hit (up to 3 stack) and granting 3 seconds of invulnerability. Rare powerup orbs give temporary boosts: 🛡️ GitHub Advanced Security, ☁️ Cloud Runners, 🧲 Dependabot, 🔧 Copilot Autofix, 🔍 Code Review, 📦 Actions Cache, 🔒 Branch Protection, 🚦 Merge Queue, 👻 Codespaces.     Press Enter or Space to restart after game over.</p>  </main>
+    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Dodge the green Blocker issue review cards! Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Catch a falling Copilot head and it follows Mona, absorbing one fatal hit (up to 3 stack) and granting 3 seconds of invulnerability. Rare powerup orbs give temporary boosts: 🛡️ GitHub Advanced Security, ☁️ Cloud Runners, 🧲 Dependabot, 🔧 Copilot Autofix, 🔍 Code Review, 📦 Actions Cache, 🔒 Branch Protection, 🚦 Merge Queue, 👻 Codespaces. Press Enter or Space to restart after game over.</p>
+  </main>
   <script>
     const TIPS = [
       "Nice commit! Small, frequent commits make bugs easier to find.",
@@ -246,7 +247,8 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, heads: [], followers: [], invuln: 0, zaps: [], commitSpawns: 0, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) =>       newPullRequest(i * 100)) };      Object.assign(tempo, { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 });
+      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, heads: [], followers: [], invuln: 0, zaps: [], commitSpawns: 0, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      Object.assign(tempo, { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 });
       tempoLast = performance.now();
       tempoBeats = 0;
       dispatchedBeat = 0;
@@ -910,7 +912,8 @@
       }
       ctx.imageSmoothingEnabled = false;
       const sprite = monaSprites[s.facing][s.walkFrame];
-      ctx.drawImage(sprite, -20, -20, sprite.width * 2,       sprite.height * 2);      ctx.restore();
+      ctx.drawImage(sprite, -20, -20, sprite.width * 2, sprite.height * 2);
+      ctx.restore();
       drawPowerups("drawOver");
     }
     function frame(t) {
