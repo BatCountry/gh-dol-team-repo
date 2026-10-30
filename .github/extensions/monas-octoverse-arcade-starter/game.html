@@ -12,6 +12,11 @@
     main { width: min(100%, 34rem); }
     h1 { margin: 0 0 .5rem; font-size: 1.4rem; }
     h1 span { color: #3fb950; }
+    #stamina { display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; font-size: .85rem; font-weight: 700; color: #8b949e; }
+    #staminaTrack { flex: 1; height: .7rem; background: #161b22; border: 1px solid #30363d; border-radius: 1rem; overflow: hidden; }
+    #staminaFill { width: 100%; height: 100%; background: #58a6ff; transition: background .15s; }
+    #staminaFill.sprinting { background: #d29922; }
+    #staminaFill.empty { background: #f85149; }
     #hud { display: flex; justify-content: space-between; font-weight: 700; margin-bottom: .5rem; }
     #stage { position: relative; }
     canvas { display: block; width: 100%; aspect-ratio: 1; background: #0d1117; border: 2px solid #30363d; border-radius: .75rem; touch-action: none; }
@@ -34,6 +39,7 @@
   <main>
     <h1>Mona's <span>Octoverse</span> Arcade</h1>
     <div id="hud"><span>Score: <span id="score">0</span></span><span>Speed: <span id="speed">1.0</span>x</span><span>Best: <span id="best">0</span></span></div>
+    <div id="stamina"><span>Sprint</span><div id="staminaTrack" role="progressbar" aria-label="Sprint stamina" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><div id="staminaFill"></div></div></div>
     <div id="stage">
       <canvas id="game" width="480" height="480" tabindex="0" aria-label="Mona's Octoverse Arcade game"></canvas>
       <div id="over" role="alertdialog" aria-labelledby="overTitle">
@@ -44,7 +50,7 @@
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Move with arrow keys or WASD (or press/drag on the board). Press Enter or Space to restart.</p>
+    <p class="help">Move with arrow keys or WASD (or press/drag on the board). Hold Shift to sprint (stamina refills only when you collect commits). Press Enter or Space to restart.</p>
   </main>
   <script>
     const TIPS = [
@@ -55,14 +61,14 @@
       "Smooth moves! Ship small, ship often.",
       "Awesome! Every green square is progress. Keep merging!",
     ];
-    const SIZE = 480, MONA_R = 16, SQ = 18, BUG_R = 12;
+    const SIZE = 480, MONA_R = 16, SQ = 18, BUG_R = 12, SPRINT_MULT = 1.7, SPRINT_DRAIN = 0.35, STAMINA_REFILL = 0.25;
     const cv = document.getElementById("game"), ctx = cv.getContext("2d");
     const $ = (id) => document.getElementById(id);
     const keys = new Set();
-    let best = 0, state, last;
+    let best = 0, state, last, shiftHeld = false;
 
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, tipN: 0 };
+      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0 };
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
@@ -86,6 +92,11 @@
       $("score").textContent = state.score;
       $("speed").textContent = speedMult().toFixed(1);
       $("best").textContent = best;
+      const f = $("staminaFill"), pct = Math.round(state.stamina * 100);
+      f.style.width = pct + "%";
+      f.classList.toggle("sprinting", state.sprinting);
+      f.classList.toggle("empty", state.stamina <= 0);
+      $("staminaTrack").setAttribute("aria-valuenow", pct);
     }
     function step(dt) {
       const s = state, m = speedMult();
@@ -93,7 +104,10 @@
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
-      const v = 190 + Math.min(m, 4) * 10;
+      const moving = dx !== 0 || dy !== 0;
+      s.sprinting = shiftHeld && moving && s.stamina > 0;
+      if (s.sprinting) s.stamina = Math.max(0, s.stamina - SPRINT_DRAIN * dt);
+      const v = (190 + Math.min(m, 4) * 10) * (s.sprinting ? SPRINT_MULT : 1);
       s.x = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.x + dx * v * dt));
       s.y = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.y + dy * v * dt));
 
@@ -108,6 +122,7 @@
       }
       if (Math.hypot(s.x - s.square.x, s.y - s.square.y) < MONA_R + SQ / 2) {
         s.score++;
+        s.stamina = Math.min(1, s.stamina + STAMINA_REFILL);
         s.square = newSquare();
         if (s.score % 10 === 0) {
           $("tip").textContent = "Copilot: " + TIPS[s.tipN++ % TIPS.length] + " (" + s.score + " points!)";
@@ -169,14 +184,15 @@
       $("paused").classList.toggle("show", state.paused);
     }
     addEventListener("keydown", (e) => {
+      if (e.key === "Shift") shiftHeld = true;
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) togglePause(); return; }
       if (state.paused) return;
       if (state.over && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
       const d = MAP[e.key];
       if (d) { e.preventDefault(); keys.add(d); }
     });
-    addEventListener("keyup", (e) => { const d = MAP[e.key]; if (d) keys.delete(d); });
-    addEventListener("blur", () => keys.clear());
+    addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; const d = MAP[e.key]; if (d) keys.delete(d); });
+    addEventListener("blur", () => { keys.clear(); shiftHeld = false; });
     function pointer(e) {
       if (state.paused || (!e.buttons && e.pointerType !== "touch")) return;
       const r = cv.getBoundingClientRect();
