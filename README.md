@@ -12,7 +12,7 @@ Hands-on Labs environment already provides your team's repository based on
 this template; use that repository rather than creating another one.
 It includes a minimal, working Copilot App canvas extension starter, not a
 finished game. Start from it, confirm the canvas opens, then build your game
-in the starter's `game.html`.
+in the starter's `.github/extensions/monas-octoverse-arcade-starter/game.html`.
 
 **Workshop links:** [Attendee instructions](https://gh.io/dol-instructions) |
 [Discussion and submissions](https://gh.io/dol-discussion).
@@ -65,7 +65,7 @@ In the Mona's Octoverse Arcade starter canvas already included
 in your team's challenge repository, build the game described here.
 
 Keep the existing extension registration in extension.mjs;
-implement the game in game.html with HTML, CSS, and vanilla
+implement the game in `.github/extensions/monas-octoverse-arcade-starter/game.html` with HTML, CSS, and vanilla
 JavaScript, with no external build step.
 
 Make a game where Mona the Octocat collects green commit-squares
@@ -123,7 +123,7 @@ extension** that:
 
 Start from the **included, known-good canvas starter** in
 `.github/extensions/monas-octoverse-arcade-starter/`. Its `extension.mjs`
-registers and serves the canvas; `game.html` is the welcome screen and the
+registers and serves the canvas; `.github/extensions/monas-octoverse-arcade-starter/game.html` is the welcome screen and the
 place to build your game. Keep these files together. The starter is deliberately
 not a playable game: the score, collectibles, bugs, difficulty, and Copilot
 tips are yours to implement.
@@ -133,7 +133,7 @@ In the Copilot App session opened on your team's repository, ask:
 > Open the Mona's Octoverse Arcade starter canvas.
 
 The starter's button confirms that the canvas is interactive. Then paste the
-challenge prompt above and build the game in `game.html`. Use HTML, CSS, and
+challenge prompt above and build the game in `.github/extensions/monas-octoverse-arcade-starter/game.html`. Use HTML, CSS, and
 vanilla JavaScript inside the canvas, with **no external build step**. Keep
 the game self-contained: do not add a package manifest, dependencies, or
 external assets. The starter handles canvas registration and serving so your
