@@ -18,6 +18,12 @@
     #staminaFill.sprinting { background: #d29922; }
     #staminaFill.empty { background: #f85149; }
     #hud { display: flex; justify-content: space-between; font-weight: 700; margin-bottom: .5rem; }
+    #powerups { display: grid; grid-template-columns: repeat(var(--n, 9), 1fr); gap: .3rem; height: 2.6rem; margin-bottom: .5rem; }
+    .slot { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .2rem; min-width: 0; overflow: hidden; padding: 0 .25rem; background: #161b22; border: 1px solid #30363d; border-radius: .5rem; opacity: .35; filter: grayscale(1); }
+    .slot.active { opacity: 1; filter: none; }
+    .slot span { font-size: 1.1rem; line-height: 1; }
+    .chipTrack { width: 100%; height: .3rem; background: #0d1117; border-radius: 1rem; overflow: hidden; }
+    .chipFill { height: 100%; width: 100%; }
     #stage { position: relative; }
     canvas { display: block; width: 100%; aspect-ratio: 1; background: #0d1117; border: 2px solid #30363d; border-radius: .75rem; touch-action: none; }
     #over { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: .5rem; background: rgba(13,17,23,.88); border-radius: .75rem; text-align: center; padding: 1rem; }
@@ -25,6 +31,7 @@
     #paused { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: .25rem; background: rgba(13,17,23,.8); border-radius: .75rem; text-align: center; }
     #paused h2 { margin: 0; font-size: 2rem; color: #58a6ff; }
     #paused p { margin: 0 0 .5rem; color: #c9d1d9; }
+    #newBest { color: #e3b341; font-weight: 700; margin: 0; }
     #over h2 { margin: 0; font-size: 2rem; color: #f85149; }
     button { padding: .7rem 1.2rem; color: #fff; font: inherit; font-weight: 700; background: #238636; border: 0; border-radius: .5rem; cursor: pointer; }
     button:hover { background: #1a7f37; }
@@ -40,17 +47,20 @@
     <h1>Mona's <span>Octoverse</span> Arcade</h1>
     <div id="hud"><span>Score: <span id="score">0</span></span><span>Speed: <span id="speed">1.0</span>x</span><span>Best: <span id="best">0</span></span></div>
     <div id="stamina"><span>Sprint</span><div id="staminaTrack" role="progressbar" aria-label="Sprint stamina" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><div id="staminaFill"></div></div></div>
+    <div id="powerups" role="group" aria-label="Powerups"></div>
     <div id="stage">
       <canvas id="game" width="480" height="480" tabindex="0" aria-label="Mona's Octoverse Arcade game"></canvas>
       <div id="over" role="alertdialog" aria-labelledby="overTitle">
         <h2 id="overTitle">Game over</h2>
-        <p>A bug got Mona! Final score: <strong id="final">0</strong></p>
+        <p><span id="cause">A bug got Mona!</span> Final score: <strong id="final">0</strong></p>
+        <p id="newBest" hidden>🏆 New high score!</p>
+        <p>High score: <strong id="overBest">0</strong></p>
         <button id="restart" type="button">Restart</button>
       </div>
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Press Enter or Space to restart after game over.</p>
+    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Dodge the green Blocker issue review cards! Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Rare powerup orbs give temporary boosts: 🛡️ GitHub Advanced Security, ☁️ Cloud Runners, 🧲 Dependabot, 🔧 Copilot Autofix, 🔍 Code Review, 📦 Actions Cache, 🔒 Branch Protection, 🚦 Merge Queue, 👻 Codespaces. Press Enter or Space to restart after game over.</p>
   </main>
   <script>
     const TIPS = [
@@ -145,7 +155,89 @@
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
     const PR_ACTIONS = ["Fix", "Improve", "Refactor", "Test", "Optimize", "Update"];
     const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
-    let best = 0, state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
+    let best = 0;
+    try { best = Number(localStorage.getItem("monaArcadeBest")) || 0; } catch (e) { /* storage unavailable */ }
+    const BLOCKER_W = SIZE / 4, BLOCKER_H = 112;
+    const BLOCKER_COMMENTS = [
+      ["Vanilla JS? Bold choice.", "Have we tried fewer features?"],
+      ["This could have been", "a very short meeting."],
+      ["Love the ambition.", "Requesting changes anyway."],
+      ["Works on your machine?", "A compelling test strategy."],
+      ["Just one tiny suggestion:", "please rewrite the whole thing."],
+      ["Why ship today when we", "could bikeshed until Friday?"],
+      ["Needs more abstraction.", "No, not that abstraction."],
+      ["Looks good, except for", "the part where it changes."],
+    ];
+    let state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
+
+    const hooks = new Map();
+    function onGameEvent(event, handler) {
+      if (typeof handler !== "function") throw new TypeError("Hook handler must be a function");
+      const entry = { handler };
+      if (!hooks.has(event)) hooks.set(event, new Set());
+      const listeners = hooks.get(event);
+      listeners.add(entry);
+      return () => listeners.delete(entry);
+    }
+    function callHooks(event, detail) {
+      for (const { handler } of [...(hooks.get(event) || [])]) {
+        try { handler(detail); }
+        catch (error) { console.error(`Game hook failed: ${event}`, error); }
+      }
+    }
+    // on() runs handlers in registration order and returns an unsubscribe function.
+    // onBeat(4, fn, 1) runs on beats 1, 5, 9...; beat 1 starts after one interval.
+    // Gameplay events: enemy:hit { enemy }, blocker:hit { blocker }, commit:collected / commit:missed { square }.
+    // Secret events: secret:collected / secret:exploded { secret }.
+    // beat payload: { beat, parity: "odd" | "even", bpm, seconds } at the beat boundary.
+    window.gameHooks = {
+      on: onGameEvent,
+      onBeat(every, handler, offset = 0) {
+        if (!Number.isInteger(every) || every < 1 || !Number.isInteger(offset) || offset < 0) {
+          throw new RangeError("Beat interval must be a positive integer; offset must be a non-negative integer");
+        }
+        if (typeof handler !== "function") throw new TypeError("Hook handler must be a function");
+        return onGameEvent("beat", (tick) => {
+          if (tick.beat >= offset && (tick.beat - offset) % every === 0) handler(tick);
+        });
+      },
+    };
+
+    const TEMPO_MIN = 60, TEMPO_MAX = 180, SPEED_RAMP_SECONDS = 60;
+    // Presentation API: read window.tempo in draw() or other scripts.
+    // beat is zero-based; phase rises from 0 to 1, pulse falls from 1 to 0.
+    // This silent clock freezes on pause/death/game-over and resets on restart.
+    // BPM follows the gameplay speed timer from 60 to 180 over 60 seconds, ignoring score.
+    // Beat 0 is the initial even state; emitted beats start at 1 (odd), then 2 (even).
+    const tempo = window.tempo = { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 };
+    let tempoLast, tempoBeats = 0, dispatchedBeat = 0, dispatchingBeats = false;
+    function updateTempo(now = performance.now()) {
+      const elapsed = !state.over && !state.paused && !state.death ? Math.max(0, now - tempoLast) / 1000 : 0;
+      const startSeconds = tempo.seconds, startBeats = tempoBeats, startBpm = tempo.bpm;
+      const bpm = TEMPO_MIN + (TEMPO_MAX - TEMPO_MIN) * Math.min(state.time / SPEED_RAMP_SECONDS, 1);
+      // Integrate BPM instead of multiplying total time by the changing tempo.
+      const slope = elapsed > 0 ? (bpm - startBpm) / elapsed : 0;
+      tempoBeats += elapsed * (startBpm + bpm) / 120;
+      tempo.seconds += elapsed;
+      tempo.bpm = bpm;
+      tempoLast = now;
+      tempo.beat = Math.floor(tempoBeats);
+      tempo.parity = tempo.beat % 2 === 0 ? "even" : "odd";
+      tempo.phase = tempoBeats - tempo.beat;
+      tempo.pulse = 1 - tempo.phase;
+      if (dispatchingBeats) return;
+      const currentState = state;
+      // Deliver crossed beats even after a slow frame; these are not audio scheduling callbacks.
+      dispatchingBeats = true;
+      try {
+        while (dispatchedBeat < tempo.beat && state === currentState && !state.over && !state.paused && !state.death) {
+          const beat = ++dispatchedBeat;
+          const crossingBpm = Math.sqrt(Math.max(0, startBpm ** 2 + 120 * slope * (beat - startBeats)));
+          const offset = 120 * (beat - startBeats) / (startBpm + crossingBpm);
+          callHooks("beat", { beat, parity: beat % 2 === 0 ? "even" : "odd", bpm: crossingBpm, seconds: startSeconds + offset });
+        }
+      } finally { dispatchingBeats = false; }
+    }
 
     function newPullRequest(y) {
       const pick = (items) => items[Math.floor(Math.random() * items.length)];
@@ -153,14 +245,19 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      Object.assign(tempo, { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 });
+      tempoLast = performance.now();
+      tempoBeats = 0;
+      dispatchedBeat = 0;
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
+      $("cause").textContent = "A bug got Mona!";
       updateHud();
       $("tip").textContent = "Copilot: I'm here to help. Collect green commits and dodge the bugs!";
     }
-    const speedMult = () => 1 + Math.min(state.time / 20, 3) + state.score * 0.03;
+    const speedMult = () => 1 + 3 * Math.min(state.time / SPEED_RAMP_SECONDS, 1) + state.score * 0.03;
     function newSquare() {
       return { x: 30 + Math.random() * (SIZE - 60), y: -SQ };
     }
@@ -190,6 +287,7 @@
       f.classList.toggle("sprinting", state.sprinting);
       f.classList.toggle("empty", state.stamina <= 0);
       $("staminaTrack").setAttribute("aria-valuenow", pct);
+      updatePowerupHud();
     }
     function step(dt) {
       const s = state, m = speedMult();
@@ -205,10 +303,11 @@
         });
       }
       s.square.y += gridScroll;
-      if (s.square.y > SIZE + SQ / 2) s.square = newSquare();
+      if (s.square.y > SIZE + SQ / 2) callHooks("commit:missed", { square: s.square });
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
+      tickPowerups(dt);
       const moving = dx !== 0 || dy !== 0;
       if (moving && !reducedMotion.matches) {
         s.walkBeat += dt;
@@ -222,16 +321,18 @@
       }
       s.sprinting = (shiftHeld || pointerSprint) && moving && s.stamina > 0;
       if (s.sprinting) s.stamina = Math.max(0, s.stamina - SPRINT_DRAIN * dt);
-      const v = (190 + Math.min(m, 4) * 10) * (s.sprinting ? SPRINT_MULT : 1);
+      const v = (190 + Math.min(m, 4) * 10) * (s.sprinting ? SPRINT_MULT : 1) * powerupSpeedMult();
       s.x = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.x + dx * v * dt));
       s.y = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.y + dy * v * dt));
 
+      updateBlockers(dt, m);
+      if (s.death || s.over) return;
       s.spawn -= dt;
       if (s.spawn <= 0) { spawnBug(); s.spawn = Math.max(0.8, 3 - s.time / 25); }
       for (const b of s.bugs) {
         const bt = BUG_TYPES[b.type || "normal"];
         const d = Math.hypot(s.x - b.x, s.y - b.y) || 1;
-        const bv = (45 + 25 * m) * bt.speed;
+        const bv = (45 + 25 * m) * bt.speed * bugSpeedMult();
         b.x += (s.x - b.x) / d * bv * dt;
         b.y += (s.y - b.y) / d * bv * dt;
         if (b.vx || b.vy) {
@@ -239,13 +340,18 @@
           const decay = Math.exp(-3 * dt);
           b.vx *= decay; b.vy *= decay;
         }
-        if (d < MONA_R + bt.r - 4) return gameOver();
+        if (d < MONA_R + bt.r - 4) {
+          if (absorbHit(b)) { b.dead = true; continue; }
+          callHooks("enemy:hit", { enemy: b }); return;
+        }
       }
+      if (s.bugs.some((b) => b.dead)) s.bugs = s.bugs.filter((b) => !b.dead);
       updateSecrets(dt);
       if (Math.hypot(s.x - s.square.x, s.y - s.square.y) < MONA_R + SQ / 2) {
-        s.stamina = Math.min(1, s.stamina + STAMINA_REFILL);
-        s.square = newSquare();
-        addScore(1);
+        callHooks("commit:collected", { square: s.square });
+      }
+      for (const q of s.extras.slice()) {
+        if (Math.hypot(s.x - q.x, s.y - q.y) < MONA_R + SQ / 2) callHooks("commit:collected", { square: q });
       }
     }
     function addScore(n) {
@@ -273,12 +379,11 @@
       const kept = [];
       for (const q of s.secrets) {
         if (Math.hypot(s.x - q.x, s.y - q.y) < MONA_R + SECRET_R) {
-          s.stamina = Math.min(1, s.stamina + STAMINA_REFILL);
-          addScore(SECRET_BONUS);
+          callHooks("secret:collected", { secret: q });
           continue;
         }
         q.age += dt;
-        if (q.age >= SECRET_FUSE) { explodeSecret(q); continue; }
+        if (q.age >= SECRET_FUSE) { callHooks("secret:exploded", { secret: q }); continue; }
         kept.push(q);
       }
       s.secrets = kept;
@@ -290,10 +395,320 @@
         state.bugs.push({ x: q.x, y: q.y, type: pickBugType(), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp });
       }
     }
-    function gameOver() {
+    function updateBlockers(dt, m) {
+      const s = state;
+      s.blockerTimer -= dt;
+      if (s.blockerTimer <= 0) {
+        s.blockerTimer = 10 + Math.random() * 5;
+        if (s.blockers.length === 0) {
+          s.blockers.push({
+            x: 12 + Math.random() * (SIZE - BLOCKER_W - 24), y: -BLOCKER_H,
+            vx: Math.random() < 0.5 ? -22 : 22,
+            number: 1 + Math.floor(Math.random() * 9999),
+            lines: BLOCKER_COMMENTS[Math.floor(Math.random() * BLOCKER_COMMENTS.length)],
+          });
+        }
+      }
+      for (const b of s.blockers) {
+        b.x += b.vx * dt;
+        if (b.x < 12 || b.x > SIZE - BLOCKER_W - 12) {
+          b.x = Math.max(12, Math.min(SIZE - BLOCKER_W - 12, b.x));
+          b.vx *= -1;
+        }
+        b.y += (40 + 18 * Math.min(m, 5)) * dt;
+        const nearX = Math.max(b.x, Math.min(b.x + BLOCKER_W, s.x));
+        const nearY = Math.max(b.y, Math.min(b.y + BLOCKER_H, s.y));
+        if (Math.hypot(s.x - nearX, s.y - nearY) < MONA_R - 2) {
+          callHooks("blocker:hit", { blocker: b });
+          return;
+        }
+      }
+      s.blockers = s.blockers.filter((b) => b.y < SIZE + 12);
+    }
+    function startBlockerDeath() {
+      if (state.death || state.over) return;
+      updateTempo();
+      keys.clear();
+      shiftHeld = false;
+      pointerSprint = false;
+      state.sprinting = false;
+      state.death = { time: 0, y: state.y, angle: 0 };
+      $("tip").textContent = "Copilot: Blocker issue! That review really knocked us off course.";
+      updateHud();
+      if (reducedMotion.matches) gameOver("A blocker issue stopped Mona!");
+    }
+    function updateDeath(dt) {
+      const d = state.death;
+      d.time += dt;
+      if (reducedMotion.matches) return gameOver("A blocker issue stopped Mona!");
+      const flip = Math.max(0, Math.min(1, (d.time - 0.3) / 0.18));
+      d.angle = Math.PI * flip;
+      const fall = Math.max(0, d.time - 0.48);
+      d.y = state.y + 80 * fall + 450 * fall * fall;
+      if (d.y > SIZE + MONA_R * 2) gameOver("A blocker issue stopped Mona!");
+    }
+    function replaceCommit() { state.square = newSquare(); }
+    function rewardCommit(detail) {
+      const q = detail && detail.square;
+      state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
+      if (q && q !== state.square) state.extras = state.extras.filter((e) => e !== q);
+      else replaceCommit();
+      let pts = 1;
+      for (const p of state.powerups) {
+        const def = POWERUPS[p.id];
+        if (def.onCommit) pts = def.onCommit(state, p, pts);
+      }
+      addScore(pts);
+    }
+    function rewardSecret() {
+      state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
+      addScore(SECRET_BONUS);
+    }
+    // Powerup framework: add a powerup by adding one entry to POWERUPS.
+    // Fields: name, icon (emoji), color, duration (s), weight (spawn odds),
+    // speedMult (optional passive multiplier), and optional lifecycle hooks
+    // onActivate(s, p), onTick(s, dt, p), onExpire(s, p), drawUnder(ctx, s, p), drawOver(ctx, s, p).
+    // p is the active instance { id, remaining, data }.
+    const POWERUP_SPAWN_MIN = 20, POWERUP_SPAWN_MAX = 40, PICKUP_LIFETIME = 8, PICKUP_R = 14;
+    const GHAS_RADIUS = 90, RUNNERS_SPEED = 1.15, MAGNET_RADIUS = 150, AUTOFIX_RADIUS = 130, MERGE_CHARGES = 3, MERGE_BONUS = 2;
+    const POWERUPS = {
+      ghas: {
+        name: "GitHub Advanced Security", icon: "🛡️", color: "#58a6ff", duration: 8, weight: 1,
+        onActivate(s) {
+          for (const q of s.secrets) callHooks("secret:collected", { secret: q });
+          s.secrets = [];
+        },
+        onTick(s) {
+          const kept = [];
+          for (const b of s.bugs) {
+            if (Math.hypot(b.x - s.x, b.y - s.y) < GHAS_RADIUS) s.blasts.push({ x: b.x, y: b.y, t: 0.3, color: "88,166,255", scale: 0.4 });
+            else kept.push(b);
+          }
+          s.bugs = kept;
+          const left = [];
+          for (const q of s.secrets) {
+            if (Math.hypot(q.x - s.x, q.y - s.y) < GHAS_RADIUS) callHooks("secret:collected", { secret: q });
+            else left.push(q);
+          }
+          s.secrets = left;
+        },
+        drawUnder(ctx, s, p) {
+          const pulse = 0.6 + 0.4 * Math.sin(p.remaining * 6), fade = Math.min(1, p.remaining / 1.5);
+          ctx.fillStyle = "rgba(88,166,255," + 0.1 * fade + ")";
+          ctx.strokeStyle = "rgba(88,166,255," + pulse * fade + ")"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(s.x, s.y, GHAS_RADIUS, 0, 7); ctx.fill(); ctx.stroke();
+        },
+      },
+      runners: {
+        name: "Cloud Runners", icon: "☁️", color: "#bc8cff", duration: 7, weight: 1, speedMult: RUNNERS_SPEED,
+        onActivate(s, p) { p.data.trail = []; },
+        onTick(s, dt, p) {
+          s.stamina = 1;
+          p.data.trail.push({ x: s.x, y: s.y, age: 0 });
+          for (const t of p.data.trail) t.age += dt;
+          p.data.trail = p.data.trail.filter((t) => t.age < 0.4);
+        },
+        drawUnder(ctx, s, p) {
+          for (const t of p.data.trail) {
+            ctx.fillStyle = "rgba(188,140,255," + 0.35 * (1 - t.age / 0.4) + ")";
+            ctx.beginPath(); ctx.arc(t.x, t.y, MONA_R * (1 - t.age), 0, 7); ctx.fill();
+          }
+        },
+      },
+      dependabot: {
+        name: "Dependabot", icon: "🧲", color: "#39c5cf", duration: 8, weight: 1,
+        onTick(s, dt) {
+          for (const q of [s.square, ...s.extras]) {
+            const d = Math.hypot(s.x - q.x, s.y - q.y);
+            if (d < MAGNET_RADIUS && d > 1) { const k = Math.min(d, 320 * dt) / d; q.x += (s.x - q.x) * k; q.y += (s.y - q.y) * k; }
+          }
+        },
+        drawUnder(ctx, s, p) {
+          ctx.strokeStyle = "rgba(57,197,207," + 0.25 * Math.min(1, p.remaining / 1.5) + ")"; ctx.lineWidth = 2;
+          ctx.setLineDash([6, 6]); ctx.beginPath(); ctx.arc(s.x, s.y, MAGNET_RADIUS, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+        },
+      },
+      autofix: {
+        name: "Copilot Autofix", icon: "🔧", color: "#7ee787", duration: 6, weight: 1,
+        onTick(s) {
+          const kept = [];
+          for (const b of s.bugs) {
+            if (Math.hypot(b.x - s.x, b.y - s.y) < AUTOFIX_RADIUS && s.extras.length < 30) {
+              s.extras.push({ x: b.x, y: b.y, ttl: 6 });
+              s.blasts.push({ x: b.x, y: b.y, t: 0.3, color: "126,231,135", scale: 0.4 });
+            } else kept.push(b);
+          }
+          s.bugs = kept;
+        },
+        drawUnder(ctx, s, p) {
+          ctx.strokeStyle = "rgba(126,231,135," + 0.3 * Math.min(1, p.remaining / 1.5) + ")"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(s.x, s.y, AUTOFIX_RADIUS, 0, 7); ctx.stroke();
+        },
+      },
+      codereview: {
+        name: "Code Review", icon: "🔍", color: "#b1bac4", duration: 7, weight: 1, bugSpeedMult: 0.4,
+      },
+      cache: {
+        name: "Actions Cache", icon: "📦", color: "#f778ba", duration: 8, weight: 1,
+        onCommit: (s, p, pts) => pts * 2,
+      },
+      protection: {
+        name: "Branch Protection", icon: "🔒", color: "#e3b341", duration: 20, weight: 1,
+        onHit(s, p, bug) {
+          s.blasts.push({ x: bug.x, y: bug.y, t: 0.1, color: "227,179,65", scale: 0.6 });
+          p.remaining = 0;
+          return true;
+        },
+        drawOver(ctx, s, p) {
+          const blink = p.remaining < 3 && Math.floor(p.remaining * 6) % 2 === 0;
+          ctx.strokeStyle = blink ? "rgba(227,179,65,0.3)" : "rgba(227,179,65,0.9)"; ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.arc(s.x, s.y, MONA_R + 7, 0, 7); ctx.stroke();
+        },
+      },
+      mergequeue: {
+        name: "Merge Queue", icon: "🚦", color: "#ffa657", duration: 12, weight: 1,
+        onActivate(s, p) { p.data.left = MERGE_CHARGES; },
+        onCommit(s, p, pts) {
+          if (p.data.left <= 0) return pts;
+          if (--p.data.left <= 0) p.remaining = 0;
+          return pts + MERGE_BONUS;
+        },
+      },
+      codespaces: {
+        name: "Codespaces", icon: "👻", color: "#e6edf3", duration: 10, weight: 1,
+        onActivate(s, p) { p.data.g = { x: Math.max(MONA_R, s.x - 40), y: s.y }; },
+        onTick(s, dt, p) {
+          const g = p.data.g;
+          let target = null, best = Infinity;
+          for (const q of [s.square, ...s.extras]) {
+            const d = Math.hypot(q.x - g.x, q.y - g.y);
+            if (d < best) { best = d; target = q; }
+          }
+          if (!target) return;
+          if (best < MONA_R + SQ / 2) { callHooks("commit:collected", { square: target }); return; }
+          const k = Math.min(best, 240 * dt) / best;
+          g.x += (target.x - g.x) * k; g.y += (target.y - g.y) * k;
+        },
+        drawOver(ctx, s, p) {
+          const g = p.data.g;
+          ctx.globalAlpha = 0.55; ctx.fillStyle = "#e6edf3";
+          ctx.beginPath(); ctx.arc(g.x, g.y, MONA_R, Math.PI, 0); ctx.lineTo(g.x + MONA_R, g.y + MONA_R);
+          ctx.lineTo(g.x - MONA_R, g.y + MONA_R); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = "#0d1117"; ctx.fillRect(g.x - 7, g.y - 4, 4, 4); ctx.fillRect(g.x + 3, g.y - 4, 4, 4);
+          ctx.globalAlpha = 1;
+        },
+      },
+    };
+    window.gamePowerups = { registry: POWERUPS, activate: (id) => activatePowerup(id) };
+    function bugSpeedMult() {
+      return state.powerups.reduce((n, p) => n * (POWERUPS[p.id].bugSpeedMult || 1), 1);
+    }
+    function absorbHit(bug) {
+      for (const p of state.powerups) {
+        const def = POWERUPS[p.id];
+        if (def.onHit && def.onHit(state, p, bug)) return true;
+      }
+      return false;
+    }
+    function pickPowerupId() {
+      const ids = Object.keys(POWERUPS), total = ids.reduce((n, id) => n + (POWERUPS[id].weight ?? 1), 0);
+      let roll = Math.random() * total;
+      for (const id of ids) { roll -= POWERUPS[id].weight ?? 1; if (roll < 0) return id; }
+      return ids[0];
+    }
+    function activatePowerup(id) {
+      const def = POWERUPS[id], s = state;
+      if (!def) return;
+      let p = s.powerups.find((x) => x.id === id);
+      if (p) { p.remaining = def.duration; return; }
+      p = { id, remaining: def.duration, data: {} };
+      s.powerups.push(p);
+      if (def.onActivate) def.onActivate(s, p);
+      callHooks("powerup:activated", { id });
+    }
+    function powerupSpeedMult() {
+      return state.powerups.reduce((n, p) => n * (POWERUPS[p.id].speedMult || 1), 1);
+    }
+    function tickPowerups(dt) {
+      const s = state;
+      for (const q of s.extras) q.ttl -= dt;
+      s.extras = s.extras.filter((q) => q.ttl > 0);
+      s.pickupTimer -= dt;
+      if (s.pickupTimer <= 0) {
+        s.pickupTimer = POWERUP_SPAWN_MIN + Math.random() * (POWERUP_SPAWN_MAX - POWERUP_SPAWN_MIN);
+        if (s.pickups.length === 0) {
+          s.pickups.push({ id: pickPowerupId(), x: 40 + Math.random() * (SIZE - 80), y: 40 + Math.random() * (SIZE - 80), age: 0 });
+        }
+      }
+      s.pickups = s.pickups.filter((k) => {
+        if (Math.hypot(s.x - k.x, s.y - k.y) < MONA_R + PICKUP_R) { activatePowerup(k.id); return false; }
+        k.age += dt;
+        return k.age < PICKUP_LIFETIME;
+      });
+      for (const p of s.powerups.slice()) {
+        const def = POWERUPS[p.id];
+        if (def.onTick) def.onTick(s, dt, p);
+        p.remaining -= dt;
+        if (p.remaining <= 0) {
+          if (def.onExpire) def.onExpire(s, p);
+          s.powerups = s.powerups.filter((x) => x !== p);
+          callHooks("powerup:expired", { id: p.id });
+        }
+      }
+    }
+    function drawPowerups(layer) {
+      for (const p of state.powerups) {
+        const fn = POWERUPS[p.id][layer];
+        if (fn) fn(ctx, state, p);
+      }
+    }
+    function drawPickups() {
+      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "16px system-ui, sans-serif";
+      for (const k of state.pickups) {
+        const def = POWERUPS[k.id], left = 1 - k.age / PICKUP_LIFETIME;
+        if (left < 0.3 && Math.floor(k.age * 8) % 2 === 0) continue;
+        ctx.fillStyle = "#0d1117"; ctx.strokeStyle = def.color; ctx.lineWidth = 3;
+        ctx.shadowColor = def.color; ctx.shadowBlur = 12;
+        ctx.beginPath(); ctx.arc(k.x, k.y, PICKUP_R, 0, 7); ctx.fill(); ctx.stroke();
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#fff"; ctx.fillText(def.icon, k.x, k.y + 1);
+      }
+    }
+    let powerupSlots = null;
+    function updatePowerupHud() {
+      const box = $("powerups");
+      if (!powerupSlots) {
+        powerupSlots = {};
+        for (const [id, def] of Object.entries(POWERUPS)) {
+          const slot = document.createElement("div");
+          slot.className = "slot"; slot.title = def.name; slot.setAttribute("aria-label", def.name);
+          const icon = document.createElement("span"); icon.textContent = def.icon;
+          const track = document.createElement("div"); track.className = "chipTrack";
+          const fill = document.createElement("div"); fill.className = "chipFill"; fill.style.background = def.color;
+          track.append(fill); slot.append(icon, track); box.append(slot);
+          powerupSlots[id] = { slot, fill };
+        }
+        box.style.setProperty("--n", Object.keys(POWERUPS).length);
+      }
+      for (const [id, { slot, fill }] of Object.entries(powerupSlots)) {
+        const p = state.powerups.find((x) => x.id === id);
+        slot.classList.toggle("active", !!p);
+        slot.style.borderColor = p ? POWERUPS[id].color : "";
+        fill.style.width = p ? Math.max(0, p.remaining / POWERUPS[id].duration * 100) + "%" : "0%";
+      }
+    }
+    function gameOver(cause = "A bug got Mona!") {
+      updateTempo();
       state.over = true;
-      best = Math.max(best, state.score);
+      const isNew = state.score > best;
+      if (isNew) {
+        best = state.score;
+        try { localStorage.setItem("monaArcadeBest", String(best)); } catch (e) { /* storage unavailable */ }
+      }
+      $("cause").textContent = cause;
       $("final").textContent = state.score;
+      $("overBest").textContent = best;
+      $("newBest").hidden = !isNew;
       $("best").textContent = best;
       $("over").classList.add("show");
       $("restart").focus();
@@ -329,12 +744,47 @@
         ctx.fillText(pr.text, pr.x + 17, pr.y);
       }
     }
+    function drawBlockers() {
+      for (const b of state.blockers) {
+        ctx.fillStyle = "#021409";
+        ctx.fillRect(b.x, b.y, BLOCKER_W, BLOCKER_H);
+        ctx.strokeStyle = "#39ef86"; ctx.lineWidth = 2;
+        ctx.strokeRect(b.x + 1, b.y + 1, BLOCKER_W - 2, BLOCKER_H - 2);
+        ctx.fillStyle = "#39ef86";
+        ctx.font = "bold 11px monospace";
+        ctx.fillText("Blocker issue", b.x + 8, b.y + 17);
+        ctx.font = "9px monospace";
+        ctx.fillStyle = "#75b88c";
+        ctx.fillText("#" + b.number + " @reviewer", b.x + 8, b.y + 31);
+        ctx.fillText("Requested changes", b.x + 8, b.y + 43);
+        ctx.fillStyle = "#b3ffcb";
+        ctx.font = "10px monospace";
+        const lines = [""], maxWidth = BLOCKER_W - 16;
+        for (const word of b.lines.join(" ").split(" ")) {
+          const i = lines.length - 1, next = lines[i] ? lines[i] + " " + word : word;
+          if (ctx.measureText(next).width > maxWidth) lines.push(word);
+          else lines[i] = next;
+        }
+        if (lines.length > 4) {
+          lines.length = 4;
+          while (ctx.measureText(lines[3] + "...").width > maxWidth) lines[3] = lines[3].slice(0, -1);
+          lines[3] += "...";
+        }
+        lines.forEach((line, i) => ctx.fillText(line, b.x + 8, b.y + 61 + i * 12));
+      }
+    }
     function draw() {
       const s = state;
       drawBackground();
+      drawBlockers();
       ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
       ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
       ctx.shadowBlur = 0;
+      for (const q of s.extras) {
+        ctx.globalAlpha = q.ttl < 1.5 && Math.floor(q.ttl * 8) % 2 === 0 ? 0.3 : 1;
+        ctx.fillStyle = "#56d364"; ctx.fillRect(q.x - SQ / 2, q.y - SQ / 2, SQ, SQ);
+      }
+      ctx.globalAlpha = 1;
       for (const q of s.secrets) {
         const left = Math.max(0, 1 - q.age / SECRET_FUSE), urgent = left < 0.4 && Math.floor(q.age * 8) % 2 === 0;
         ctx.fillStyle = urgent ? "#ffdf5d" : "#d29922";
@@ -347,9 +797,11 @@
         ctx.beginPath(); ctx.arc(q.x, q.y, SECRET_R + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * left); ctx.stroke();
       }
       for (const b of s.blasts) {
-        ctx.strokeStyle = "rgba(248,81,73," + (1 - b.t / 0.5) + ")"; ctx.lineWidth = 4;
-        ctx.beginPath(); ctx.arc(b.x, b.y, 10 + b.t * 220, 0, 7); ctx.stroke();
+        ctx.strokeStyle = "rgba(" + (b.color || "248,81,73") + "," + (1 - b.t / 0.5) + ")"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(b.x, b.y, (10 + b.t * 220) * (b.scale || 1), 0, 7); ctx.stroke();
       }
+      drawPickups();
+      drawPowerups("drawUnder");
       for (const b of s.bugs) {
         const bt = BUG_TYPES[b.type || "normal"], r = bt.r, k = r / BUG_R;
         ctx.fillStyle = bt.color;
@@ -365,24 +817,34 @@
         ctx.fillStyle = "#fff";
         ctx.fillRect(b.x - 5 * k, b.y - 4 * k, 3 * k, 3 * k); ctx.fillRect(b.x + 2 * k, b.y - 4 * k, 3 * k, 3 * k);
       }
+      ctx.save();
+      ctx.translate(s.x, s.death ? s.death.y : s.y);
+      if (s.death) ctx.rotate(s.death.angle);
       ctx.imageSmoothingEnabled = false;
       const sprite = monaSprites[s.facing][s.walkFrame];
-      ctx.drawImage(sprite, s.x - 20, s.y - 20, sprite.width * 2, sprite.height * 2);
-      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(sprite, -20, -20, sprite.width * 2, sprite.height * 2);
+      ctx.restore();
+      drawPowerups("drawOver");
     }
     function frame(t) {
       const dt = Math.min((t - last) / 1000 || 0, 0.05);
       last = t;
-      if (!state.over && !state.paused) { step(dt); if (!state.over) updateHud(); }
+      updateTempo();
+      if (!state.over && !state.paused) {
+        if (state.death) updateDeath(dt);
+        else step(dt);
+        if (!state.over) updateHud();
+      }
       draw();
       requestAnimationFrame(frame);
     }
-    function restart() { reset(); keys.clear(); pointerSprint = false; cv.focus(); }
+    function restart() { reset(); keys.clear(); shiftHeld = false; pointerSprint = false; lastDown = 0; cv.focus(); }
 
     const MAP = { ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
                   ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" };
     function togglePause() {
       if (state.over) return;
+      updateTempo();
       state.paused = !state.paused;
       keys.clear();
       $("paused").classList.toggle("show", state.paused);
@@ -391,14 +853,15 @@
       if (e.key === "Shift") shiftHeld = true;
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) togglePause(); return; }
       if (state.paused) return;
-      if (state.over && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
+      if ((state.over || state.death) && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
+      if (state.over || state.death) return;
       const d = MAP[e.key];
       if (d) { e.preventDefault(); state.facing = d; keys.add(d); }
     });
     addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; const d = MAP[e.key]; if (d) keys.delete(d); });
     addEventListener("blur", () => { keys.clear(); shiftHeld = false; pointerSprint = false; });
     function pointer(e) {
-      if (state.paused || (!e.buttons && e.pointerType !== "touch")) return;
+      if (state.over || state.death || state.paused || (!e.buttons && e.pointerType !== "touch")) return;
       const r = cv.getBoundingClientRect();
       const px = (e.clientX - r.left) * SIZE / r.width, py = (e.clientY - r.top) * SIZE / r.height;
       keys.clear();
@@ -412,6 +875,7 @@
       }
     }
     cv.addEventListener("pointerdown", (e) => {
+      if (state.over || state.death || state.paused) return;
       const now = performance.now();
       pointerSprint = now - lastDown < 350;
       lastDown = now;
@@ -423,6 +887,12 @@
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
+    onGameEvent("enemy:hit", () => gameOver());
+    onGameEvent("blocker:hit", startBlockerDeath);
+    onGameEvent("commit:collected", rewardCommit);
+    onGameEvent("commit:missed", replaceCommit);
+    onGameEvent("secret:collected", rewardSecret);
+    onGameEvent("secret:exploded", ({ secret }) => explodeSecret(secret));
     reset();
     cv.focus();
     requestAnimationFrame((t) => { last = t; frame(t); });
