@@ -251,7 +251,7 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, heads: [], followers: [], invuln: 0, zaps: [], commitSpawns: 0, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], bullets: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, heads: [], followers: [], invuln: 0, zaps: [], commitSpawns: 0, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], bullets: [], boss: null, bossShots: [], bossTimer: BOSS_FIRST, blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       Object.assign(tempo, { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 });
       tempoLast = performance.now();
       tempoBeats = 0;
@@ -270,6 +270,21 @@
     // Webs are the Dependabot magnet's grappling hooks: only while it is active, they pull beneficial
     // pickups (commits, secret keys, powerup orbs, Copilot heads) within MAGNET_RADIUS at MAGNET_PULL.
     const BULLET_SPEED = 420, BULLET_R = 4, MONA_WIDTH = MONA_R * 2, MAGNET_RADIUS = 6 * MONA_WIDTH, MAGNET_PULL = 320;
+    function nearestThreat() {
+      const s = state;
+      let target = null, best = Infinity;
+      if (s.boss) { best = Math.hypot(s.boss.x - s.x, s.boss.y - s.y) - 80; target = { x: s.boss.x, y: s.boss.y }; }
+      for (const b of s.bugs) {
+        const d = Math.hypot(b.x - s.x, b.y - s.y);
+        if (d < best) { best = d; target = { x: b.x, y: b.y }; }
+      }
+      for (const k of s.blockers) {
+        const nx = Math.max(k.x, Math.min(k.x + BLOCKER_W, s.x)), ny = Math.max(k.y, Math.min(k.y + BLOCKER_H, s.y));
+        const d = Math.hypot(nx - s.x, ny - s.y);
+        if (d < best) { best = d; target = { x: k.x + BLOCKER_W / 2, y: k.y + BLOCKER_H / 2 }; }
+      }
+      return target;
+    }
     const FACING_VECTORS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
     function shootFrom(o, copilot) {
       const [ax, ay] = state.aim || FACING_VECTORS[state.facing] || [0, 1];
@@ -288,17 +303,102 @@
       for (const u of s.bullets) {
         u.x += u.vx * dt; u.y += u.vy * dt;
         if (u.x < -20 || u.x > SIZE + 20 || u.y < -20 || u.y > SIZE + 20) continue;
+        if (s.boss && Math.hypot(s.boss.x - u.x, s.boss.y - u.y) < BOSS_R + BULLET_R) { hitBoss(); continue; }
         const bug = s.bugs.find((b) => Math.hypot(b.x - u.x, b.y - u.y) < BUG_TYPES[b.type || "normal"].r + BULLET_R);
-        if (bug) {
-          s.bugs = s.bugs.filter((b) => b !== bug);
-          s.blasts.push({ x: bug.x, y: bug.y, t: 0.3, color: "88,166,255", scale: 0.4 });
-          continue;
-        }
+        if (bug) { killBug(bug); continue; }
         const blocker = s.blockers.find((k) => u.x > k.x - BULLET_R && u.x < k.x + BLOCKER_W + BULLET_R && u.y > k.y - BULLET_R && u.y < k.y + BLOCKER_H + BULLET_R);
         if (blocker) continue; // blockers are indestructible; bullets are absorbed
         kept.push(u);
       }
       s.bullets = kept;
+    }
+    // Boss: "Mega Bug" takes BOSS_HP bullet hits, fires telegraphed fans of slow shots, one at a time.
+    const BOSS_HP = 6, BOSS_R = 34, BOSS_SCORE = 25, BOSS_FIRST = 40, BOSS_GAP_MIN = 45, BOSS_GAP_MAX = 65, BOSS_SHOT_R = 6;
+    function spawnBoss() {
+      state.boss = { x: SIZE / 2, y: -BOSS_R, t: 0, hp: BOSS_HP, flash: 0, atk: 2, charge: 0, touchCd: 0 };
+      $("tip").textContent = "Copilot: Mega Bug incoming! It takes " + BOSS_HP + " hits - keep shooting and dodge its shots.";
+    }
+    function hitBoss() {
+      const b = state.boss;
+      if (!b) return;
+      b.hp--; b.flash = 0.12;
+      state.blasts.push({ x: b.x, y: b.y, t: 0.3, color: "88,166,255", scale: 0.5 });
+      if (b.hp > 0) return;
+      state.boss = null; state.bossShots = [];
+      state.bossTimer = BOSS_GAP_MIN + Math.random() * (BOSS_GAP_MAX - BOSS_GAP_MIN);
+      state.blasts.push({ x: b.x, y: b.y, t: 0, color: "248,81,73", scale: 1 }, { x: b.x, y: b.y, t: 0.2, color: "255,223,93", scale: 0.7 });
+      state.pickups.push({ id: pickPowerupId(), x: Math.max(40, Math.min(SIZE - 40, b.x)), y: Math.max(60, Math.min(SIZE - 40, b.y + 40)), age: 0 });
+      addScore(BOSS_SCORE);
+      $("tip").textContent = "Copilot: Mega Bug squashed! +" + BOSS_SCORE + " points and a powerup drop.";
+      callHooks("boss:defeated", { boss: b });
+    }
+    function updateBoss(dt, m) {
+      const s = state;
+      if (!s.boss) {
+        s.bossTimer -= dt;
+        if (s.bossTimer <= 0) spawnBoss();
+        if (!s.boss) return false;
+      }
+      const b = s.boss;
+      b.t += dt; b.flash = Math.max(0, b.flash - dt); b.touchCd = Math.max(0, b.touchCd - dt);
+      b.x = SIZE / 2 + Math.sin(b.t * 0.7) * (SIZE / 2 - BOSS_R - 16);
+      b.y += (90 + 50 * Math.sin(b.t * 0.5) - b.y) * Math.min(1, dt * 2);
+      const enraged = b.hp <= BOSS_HP / 2;
+      b.atk -= dt;
+      b.charge = b.atk < 0.7 ? 1 - Math.max(0, b.atk) / 0.7 : 0;
+      if (b.atk <= 0) {
+        b.atk = enraged ? 2 : 2.6;
+        const n = enraged ? 5 : 3, base = Math.atan2(s.y - b.y, s.x - b.x), sp = 130 + 15 * Math.min(m, 4);
+        for (let i = 0; i < n; i++) {
+          const a = base + (i - (n - 1) / 2) * 0.35;
+          s.bossShots.push({ x: b.x, y: b.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp });
+        }
+      }
+      for (const u of s.bossShots) {
+        u.x += u.vx * dt; u.y += u.vy * dt;
+        if (s.blockers.some((k) => u.x > k.x && u.x < k.x + BLOCKER_W && u.y > k.y && u.y < k.y + BLOCKER_H)) u.zapped = true;
+        else if (u.x < -20 || u.x > SIZE + 20 || u.y < -20 || u.y > SIZE + 20) u.zapped = true;
+        else if (Math.hypot(s.x - u.x, s.y - u.y) < MONA_R + BOSS_SHOT_R - 2) {
+          if (s.invuln <= 0 && absorbHit(u)) u.zapped = true;
+          else if (hazardHit("enemy:hit", { enemy: u })) return true;
+          else u.zapped = true;
+        }
+      }
+      s.bossShots = s.bossShots.filter((u) => !u.zapped);
+      if (b.touchCd <= 0 && Math.hypot(s.x - b.x, s.y - b.y) < MONA_R + BOSS_R - 8) {
+        if (s.invuln <= 0 && absorbHit(b)) b.touchCd = 1.5;
+        else {
+          if (hazardHit("enemy:hit", { enemy: b })) return true;
+          b.zapped = false; b.touchCd = 1.5;
+        }
+      }
+      return false;
+    }
+    function drawBoss(g = ctx) {
+      const ctx = g;
+      const s = state, b = s.boss;
+      ctx.fillStyle = "#ff7b72"; ctx.shadowColor = "#f85149"; ctx.shadowBlur = 10;
+      for (const u of s.bossShots) { ctx.beginPath(); ctx.arc(u.x, u.y, BOSS_SHOT_R, 0, 7); ctx.fill(); }
+      ctx.shadowBlur = 0;
+      if (!b) return;
+      const flash = b.flash > 0, col = flash ? "#ffffff" : b.hp <= BOSS_HP / 2 ? "#d1242f" : "#8e1519";
+      ctx.save(); ctx.translate(b.x, b.y);
+      if (b.charge > 0) { ctx.strokeStyle = "rgba(255,223,93," + b.charge + ")"; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(0, 0, BOSS_R + 6 + 6 * b.charge, 0, 7); ctx.stroke(); }
+      ctx.strokeStyle = col; ctx.lineWidth = 5;
+      for (const a of [-1, 0, 1]) for (const side of [-1, 1]) {
+        ctx.beginPath(); ctx.moveTo(side * 20, a * 14); ctx.lineTo(side * (BOSS_R + 16), a * 24 + 8); ctx.stroke();
+      }
+      ctx.beginPath(); ctx.moveTo(-8, -26); ctx.lineTo(-18, -44); ctx.moveTo(8, -26); ctx.lineTo(18, -44); ctx.stroke();
+      ctx.fillStyle = col; ctx.shadowColor = "#f85149"; ctx.shadowBlur = flash ? 0 : 14;
+      ctx.beginPath(); ctx.ellipse(0, 0, BOSS_R, BOSS_R * 0.85, 0, 0, 7); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#ffdf5d"; ctx.beginPath(); ctx.arc(-11, -6, 7, 0, 7); ctx.arc(11, -6, 7, 0, 7); ctx.fill();
+      ctx.fillStyle = "#0d1117"; ctx.beginPath(); ctx.arc(-11, -5, 3, 0, 7); ctx.arc(11, -5, 3, 0, 7); ctx.fill();
+      ctx.fillRect(-14, 10, 28, 4);
+      ctx.restore();
+      const w = 80, x = b.x - w / 2, y = b.y - BOSS_R - 22;
+      ctx.fillStyle = "#0d1117"; ctx.fillRect(x - 1, y - 1, w + 2, 8);
+      ctx.fillStyle = "#f85149"; ctx.fillRect(x, y, w * b.hp / BOSS_HP, 6);
     }
     function webTargets() {
       const s = state;
@@ -346,14 +446,139 @@
     }
     const SECRET_FUSE = 5, SECRET_R = 14, SECRET_BONUS = 3, SECRET_BURST = 12, SECRET_SPAWN_MIN = 15, SECRET_SPAWN_MAX = 30;
     const BUG_TYPES = {
-      normal: { r: 12, speed: 1, color: "#f85149" },
-      small: { r: 8, speed: 1.5, color: "#f0883e" },
-      big: { r: 20, speed: 0.6, color: "#a40e26" },
+      normal: { r: 12, speed: 1, color: "#f85149", weight: 50, unlock: 0 },
+      small: { r: 8, speed: 1.5, color: "#f0883e", weight: 20, unlock: 0 },
+      big: { r: 20, speed: 0.6, color: "#a40e26", weight: 12, unlock: 0 },
+      weaver: { r: 10, speed: 0.9, color: "#3ddbd9", weight: 14, unlock: 15 },
+      splitter: { r: 16, speed: 0.7, color: "#ff6a3d", weight: 12, unlock: 25 },
+      homing: { r: 12, speed: 1.1, color: "#e040fb", weight: 12, unlock: 30 },
+      diver: { r: 11, speed: 0.8, color: "#ffd33d", weight: 12, unlock: 35 },
+      orbiter: { r: 10, speed: 1, color: "#ffb347", weight: 10, unlock: 45 },
     };
+    const wrapAngle = (a) => Math.atan2(Math.sin(a), Math.cos(a));
     function pickBugType() {
-      const roll = Math.random();
-      if (roll < 0.6) return "normal";
-      return roll < 0.85 ? "small" : "big";
+      const types = Object.entries(BUG_TYPES).filter(([, t]) => state.time >= t.unlock);
+      let roll = Math.random() * types.reduce((n, [, t]) => n + t.weight, 0);
+      for (const [id, t] of types) { roll -= t.weight; if (roll < 0) return id; }
+      return "normal";
+    }
+    function killBug(bug) {
+      const s = state;
+      s.bugs = s.bugs.filter((b) => b !== bug);
+      s.blasts.push({ x: bug.x, y: bug.y, t: 0.3, color: "88,166,255", scale: 0.4 });
+      if (bug.type === "splitter") {
+        for (let i = 0; i < 3; i++) {
+          const a = Math.PI * 2 * (i / 3) + Math.random();
+          s.bugs.push({ x: bug.x, y: bug.y, type: "small", vx: Math.cos(a) * 160, vy: Math.sin(a) * 160 });
+        }
+      }
+    }
+    // Per-type movement; everything else just chases Mona.
+    function moveBug(b, s, dt, sp, d) {
+      b.t = (b.t || 0) + dt;
+      const ux = (s.x - b.x) / d, uy = (s.y - b.y) / d;
+      if (b.type === "weaver") {
+        const w = Math.sin(b.t * 4 + (b.ph = b.ph ?? Math.random() * 6)) * 1.1;
+        b.x += (ux - uy * w) * sp * dt; b.y += (uy + ux * w) * sp * dt;
+      } else if (b.type === "homing") {
+        if (b.ang === undefined) b.ang = Math.atan2(uy, ux);
+        b.ang += Math.max(-1.3 * dt, Math.min(1.3 * dt, wrapAngle(Math.atan2(uy, ux) - b.ang)));
+        b.x += Math.cos(b.ang) * sp * dt; b.y += Math.sin(b.ang) * sp * dt;
+      } else if (b.type === "orbiter") {
+        if (b.orbR === undefined) { b.orbR = d; b.theta = Math.atan2(b.y - s.y, b.x - s.x); }
+        b.orbR = Math.max(20, b.orbR - 12 * dt);
+        b.theta += 1.5 * dt;
+        const tx = s.x + Math.cos(b.theta) * b.orbR, ty = s.y + Math.sin(b.theta) * b.orbR;
+        const k = Math.min(1, 6 * dt);
+        b.x += (tx - b.x) * k; b.y += (ty - b.y) * k;
+      } else if (b.type === "diver") {
+        b.state = b.state || "hover";
+        if (b.state === "hover") {
+          if (d > 190) { b.x += ux * sp * dt; b.y += uy * sp * dt; }
+          else { b.state = "aim"; b.timer = 0.8; b.dx = ux; b.dy = uy; }
+        } else if (b.state === "aim") {
+          b.timer -= dt;
+          if (b.timer <= 0) { b.state = "lunge"; b.timer = 0.55; }
+        } else if (b.state === "lunge") {
+          b.x += b.dx * 380 * dt; b.y += b.dy * 380 * dt;
+          b.timer -= dt;
+          if (b.timer <= 0) { b.state = "rest"; b.timer = 1.2; }
+        } else {
+          b.x += ux * sp * 0.3 * dt; b.y += uy * sp * 0.3 * dt;
+          b.timer -= dt;
+          if (b.timer <= 0) b.state = "hover";
+        }
+      } else {
+        b.x += ux * sp * dt; b.y += uy * sp * dt;
+      }
+    }
+    function drawBug(b, g = ctx) {
+      const ctx = g;
+      const bt = BUG_TYPES[b.type || "normal"], r = bt.r, k = r / BUG_R, c = bt.color;
+      ctx.save(); ctx.translate(b.x, b.y);
+      ctx.fillStyle = c; ctx.strokeStyle = c; ctx.lineWidth = 2;
+      const legs = (n, len) => {
+        for (let i = 0; i < n; i++) for (const side of [-1, 1]) {
+          const y = (i - (n - 1) / 2) * 5 * k;
+          ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(side * (r + len * k), y + 4 * k); ctx.stroke();
+        }
+      };
+      const eyes = (dy = -4) => { ctx.fillStyle = "#fff"; ctx.fillRect(-5 * k, dy * k, 3 * k, 3 * k); ctx.fillRect(2 * k, dy * k, 3 * k, 3 * k); };
+      switch (b.type) {
+        case "small": // gnat: tiny body with translucent wings
+          ctx.fillStyle = "rgba(255,200,150,.45)";
+          ctx.beginPath(); ctx.ellipse(-r, -r * 0.5, r * 0.9, r * 0.45, -0.5, 0, 7); ctx.ellipse(r, -r * 0.5, r * 0.9, r * 0.45, 0.5, 0, 7); ctx.fill();
+          ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, 0, r * 0.7, r, 0, 0, 7); ctx.fill(); legs(2, 3); eyes(-5);
+          break;
+        case "big": // armored tank beetle
+          legs(3, 5); ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.85, 0, 0, 7); ctx.fill();
+          ctx.strokeStyle = "#ffa198"; ctx.beginPath(); ctx.moveTo(0, -r * 0.85); ctx.lineTo(0, r * 0.85);
+          ctx.ellipse(0, 0, r * 0.6, r * 0.5, 0, 0, 7); ctx.stroke(); eyes(-8);
+          break;
+        case "weaver": // moth: big wings flapping
+          ctx.fillStyle = "rgba(61,219,217,.55)";
+          { const f = 0.6 + 0.4 * Math.sin(b.t * 14 || 0);
+            ctx.beginPath(); ctx.ellipse(-r * 1.1, 0, r * 1.1 * f, r * 0.7, 0, 0, 7); ctx.ellipse(r * 1.1, 0, r * 1.1 * f, r * 0.7, 0, 0, 7); ctx.fill(); }
+          ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, 0, r * 0.45, r, 0, 0, 7); ctx.fill();
+          ctx.beginPath(); ctx.moveTo(-3, -r); ctx.lineTo(-7, -r - 5); ctx.moveTo(3, -r); ctx.lineTo(7, -r - 5); ctx.stroke(); eyes(-5);
+          break;
+        case "splitter": { // cracked shell with a seam, little bugs inside
+          legs(3, 4); ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.85, 0, 0, 7); ctx.fill();
+          ctx.strokeStyle = "#0d1117"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, -r * 0.85); ctx.lineTo(3, -4); ctx.lineTo(-3, 3); ctx.lineTo(0, r * 0.85); ctx.stroke();
+          ctx.fillStyle = "#ffd8c8"; for (const x of [-6, 6]) { ctx.beginPath(); ctx.arc(x, 4, 2.5, 0, 7); ctx.fill(); }
+          eyes(-8);
+          break;
+        }
+        case "homing": { // missile bug that points where it's heading
+          ctx.rotate((b.ang ?? Math.PI / 2) + Math.PI / 2);
+          ctx.beginPath(); ctx.moveTo(0, -r * 1.5); ctx.lineTo(r, r); ctx.lineTo(0, r * 0.5); ctx.lineTo(-r, r); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = "#ffe0ff"; ctx.beginPath(); ctx.arc(0, -r * 0.2, 2.5 * k, 0, 7); ctx.fill();
+          break;
+        }
+        case "diver": { // wasp: striped body, stinger, telegraph mark
+          const a = b.state === "lunge" ? Math.atan2(b.dy, b.dx) + Math.PI / 2 : 0;
+          ctx.rotate(a);
+          ctx.fillStyle = "rgba(255,255,255,.4)"; ctx.beginPath(); ctx.ellipse(-r, -2, r * 0.8, r * 0.4, -0.4, 0, 7); ctx.ellipse(r, -2, r * 0.8, r * 0.4, 0.4, 0, 7); ctx.fill();
+          ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, 0, r * 0.65, r * 1.1, 0, 0, 7); ctx.fill();
+          ctx.fillStyle = "#0d1117"; ctx.fillRect(-r * 0.65, -2, r * 1.3, 3); ctx.fillRect(-r * 0.55, 4, r * 1.1, 3);
+          ctx.beginPath(); ctx.moveTo(-2, r * 1.1); ctx.lineTo(0, r * 1.1 + 6); ctx.lineTo(2, r * 1.1); ctx.fill(); eyes(-7);
+          ctx.rotate(-a);
+          if (b.state === "aim" && Math.floor(b.timer * 10) % 2 === 0) {
+            ctx.fillStyle = "#f85149"; ctx.font = "bold 16px system-ui"; ctx.textAlign = "center"; ctx.fillText("!", 0, -r - 8);
+            ctx.strokeStyle = "rgba(248,81,73,.5)"; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(b.dx * 190, b.dy * 190); ctx.stroke(); ctx.setLineDash([]);
+          }
+          break;
+        }
+        case "orbiter": { // spiky orb with a ring
+          ctx.beginPath(); ctx.arc(0, 0, r * 0.7, 0, 7); ctx.fill();
+          for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; ctx.beginPath(); ctx.moveTo(Math.cos(a) * r * 0.7, Math.sin(a) * r * 0.7); ctx.lineTo(Math.cos(a) * r * 1.3, Math.sin(a) * r * 1.3); ctx.stroke(); }
+          eyes(-3);
+          break;
+        }
+        default: // normal beetle
+          legs(3, 5); ctx.beginPath(); ctx.ellipse(0, 0, r, r * 0.8, 0, 0, 7); ctx.fill(); eyes();
+      }
+      ctx.restore();
     }
     function spawnBug() {
       const type = pickBugType(), r = BUG_TYPES[type].r;
@@ -418,14 +643,14 @@
       updateBullets(dt);
       updateBlockers(dt, m);
       if (s.death || s.over) return;
+      if (updateBoss(dt, m)) return;
       s.spawn -= dt;
       if (s.spawn <= 0) { spawnBug(); s.spawn = Math.max(0.8, 3 - s.time / 25); }
       for (const b of s.bugs) {
         const bt = BUG_TYPES[b.type || "normal"];
         const d = Math.hypot(s.x - b.x, s.y - b.y) || 1;
         const bv = (45 + 25 * m) * bt.speed * bugSpeedMult();
-        b.x += (s.x - b.x) / d * bv * dt;
-        b.y += (s.y - b.y) / d * bv * dt;
+        moveBug(b, s, dt, bv, d);
         if (b.vx || b.vy) {
           b.x += b.vx * dt; b.y += b.vy * dt;
           const decay = Math.exp(-3 * dt);
@@ -653,7 +878,7 @@
     // speedMult (optional passive multiplier), and optional lifecycle hooks
     // onActivate(s, p), onTick(s, dt, p), onExpire(s, p), drawUnder(ctx, s, p), drawOver(ctx, s, p).
     // p is the active instance { id, remaining, data }.
-    const POWERUP_SPAWN_MIN = 20, POWERUP_SPAWN_MAX = 40, PICKUP_LIFETIME = 8, PICKUP_R = 14;
+    const POWERUP_SPAWN_MIN = 12, POWERUP_SPAWN_MAX = 26, PICKUP_LIFETIME = 8, PICKUP_R = 14;
     const GHAS_RADIUS = 90, RUNNERS_SPEED = 1.15, AUTOFIX_RADIUS = 130, MERGE_CHARGES = 3, MERGE_BONUS = 2;
     const POWERUPS = {
       ghas: {
@@ -983,21 +1208,8 @@
       g.globalAlpha = 1;
     }
     function drawBugs(g) {
-      for (const b of state.bugs) {
-        const bt = BUG_TYPES[b.type || "normal"], r = bt.r, k = r / BUG_R;
-        g.fillStyle = bt.color;
-        g.beginPath(); g.ellipse(b.x, b.y, r, r * 0.8, 0, 0, 7); g.fill();
-        g.strokeStyle = bt.color; g.lineWidth = 2;
-        for (const a of [-1, 0, 1]) for (const side of [-1, 1]) {
-          g.beginPath(); g.moveTo(b.x, b.y + a * 5 * k); g.lineTo(b.x + side * (r + 5 * k), b.y + a * 9 * k); g.stroke();
-        }
-        if (b.type === "big") {
-          g.strokeStyle = "#ffa198"; g.lineWidth = 2;
-          g.beginPath(); g.ellipse(b.x, b.y, r * 0.6, r * 0.45, 0, 0, 7); g.stroke();
-        }
-        g.fillStyle = "#fff";
-        g.fillRect(b.x - 5 * k, b.y - 4 * k, 3 * k, 3 * k); g.fillRect(b.x + 2 * k, b.y - 4 * k, 3 * k, 3 * k);
-      }
+      for (const b of state.bugs) drawBug(b, g);
+      drawBoss(g);
     }
     function drawMona(g) {
       const s = state;
