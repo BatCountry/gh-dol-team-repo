@@ -61,7 +61,7 @@
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Dodge the green Blocker issue review cards! Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Rare powerup orbs give temporary boosts: 🛡️ GitHub Advanced Security, ☁️ Cloud Runners, 🧲 Dependabot, 🔧 Copilot Autofix, 🔍 Code Review, 📦 Actions Cache, 🔒 Branch Protection, 🚦 Merge Queue, 👻 Codespaces. Press Enter or Space to restart after game over.</p>
+    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Blocker issue cards are solid walls: walk around them, but don't get crushed between one and a wall! Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Catch a falling Copilot head and it follows Mona, absorbing one fatal hit (up to 3 stack) and granting 3 seconds of invulnerability. Rare powerup orbs give temporary boosts: 🛡️ GitHub Advanced Security, ☁️ Cloud Runners, 🧲 Dependabot, 🔧 Copilot Autofix, 🔍 Code Review, 📦 Actions Cache, 🔒 Branch Protection, 🚦 Merge Queue, 👻 Codespaces. Press Enter or Space to restart after game over.</p>
   </main>
   <script>
     const TIPS = [
@@ -158,7 +158,7 @@
     const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
     let best = 0;
     try { best = Number(localStorage.getItem("monaArcadeBest")) || 0; } catch (e) { /* storage unavailable */ }
-    const BLOCKER_W = SIZE / 4, BLOCKER_H = 112;
+    const BLOCKER_W = SIZE / 4, BLOCKER_H = 112, BLOCKER_R = MONA_R - 2, CRUSH_TOLERANCE = 3;
     const BLOCKER_COMMENTS = [
       ["Vanilla JS? Bold choice.", "Have we tried fewer features?"],
       ["This could have been", "a very short meeting."],
@@ -190,6 +190,8 @@
     // onBeat(4, fn, 1) runs on beats 1, 5, 9...; beat 1 starts after one interval.
     // Gameplay events: enemy:hit { enemy }, blocker:hit { blocker }, commit:collected / commit:missed { square }.
     // Secret events: secret:collected / secret:exploded { secret }.
+    // Copilot events: copilot:collected { head }, copilot:shielded { enemy | blocker, follower }.
+    // enemy:hit / blocker:hit fire only for fatal hits (not when a Copilot follower or invulnerability blocks them).
     // beat payload: { beat, parity: "odd" | "even", bpm, seconds } at the beat boundary.
     // transport:changed fires after reset, pause/resume, death, game-over or visibility changes.
     window.gameHooks = {
@@ -248,7 +250,7 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, heads: [], followers: [], invuln: 0, zaps: [], commitSpawns: 0, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       Object.assign(tempo, { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 });
       tempoLast = performance.now();
       tempoBeats = 0;
@@ -309,6 +311,10 @@
       }
       s.square.y += gridScroll;
       if (s.square.y > SIZE + SQ / 2) callHooks("commit:missed", { square: s.square });
+      for (const h of s.heads) h.y += gridScroll * HEAD_SPEED_MULT;
+      s.heads = s.heads.filter((h) => h.y < SIZE + HEAD_R);
+      if (s.invuln > 0) s.invuln = Math.max(0, s.invuln - dt);
+      s.zaps = s.zaps.map((z) => ({ ...z, t: z.t + dt })).filter((z) => z.t < 0.5);
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
@@ -329,6 +335,7 @@
       const v = (190 + Math.min(m, 4) * 10) * (s.sprinting ? SPRINT_MULT : 1) * powerupSpeedMult();
       s.x = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.x + dx * v * dt));
       s.y = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.y + dy * v * dt));
+      updateFollowers(dt);
 
       updateBlockers(dt, m);
       if (s.death || s.over) return;
@@ -345,13 +352,16 @@
           const decay = Math.exp(-3 * dt);
           b.vx *= decay; b.vy *= decay;
         }
-        if (d < MONA_R + bt.r - 4) {
-          if (absorbHit(b)) { b.dead = true; continue; }
-          callHooks("enemy:hit", { enemy: b }); return;
+        if (!b.zapped && d < MONA_R + bt.r - 4) {
+          if (s.invuln <= 0 && absorbHit(b)) { b.dead = true; continue; }
+          if (hazardHit("enemy:hit", { enemy: b })) return;
         }
       }
-      if (s.bugs.some((b) => b.dead)) s.bugs = s.bugs.filter((b) => !b.dead);
+      if (s.bugs.some((b) => b.dead || b.zapped)) s.bugs = s.bugs.filter((b) => !b.dead && !b.zapped);
       updateSecrets(dt);
+      for (const h of s.heads) {
+        if (Math.hypot(s.x - h.x, s.y - h.y) < MONA_R + HEAD_R) callHooks("copilot:collected", { head: h });
+      }
       if (Math.hypot(s.x - s.square.x, s.y - s.square.y) < MONA_R + SQ / 2) {
         callHooks("commit:collected", { square: s.square });
       }
@@ -421,39 +431,131 @@
           b.vx *= -1;
         }
         b.y += (40 + 18 * Math.min(m, 5)) * dt;
-        const nearX = Math.max(b.x, Math.min(b.x + BLOCKER_W, s.x));
-        const nearY = Math.max(b.y, Math.min(b.y + BLOCKER_H, s.y));
-        if (Math.hypot(s.x - nearX, s.y - nearY) < MONA_R - 2) {
-          callHooks("blocker:hit", { blocker: b });
-          return;
-        }
       }
-      s.blockers = s.blockers.filter((b) => b.y < SIZE + 12);
+      // Blockers are solid: push Mona out, then re-clamp to the walls. If a blocker
+      // still overlaps her afterwards she is pinched against a wall (or another blocker).
+      for (let i = 0; i < 3; i++) {
+        for (const b of s.blockers) pushOutOfBlocker(b);
+        s.x = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.x));
+        s.y = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.y));
+      }
+      for (const b of s.blockers) {
+        if (!b.zapped && blockerPenetration(b) > CRUSH_TOLERANCE && hazardHit("blocker:hit", { blocker: b })) return;
+      }
+      s.blockers = s.blockers.filter((b) => b.y < SIZE + 12 && !b.zapped);
     }
-    function startBlockerDeath() {
+    function blockerPenetration(b) {
+      const s = state;
+      const nearX = Math.max(b.x, Math.min(b.x + BLOCKER_W, s.x));
+      const nearY = Math.max(b.y, Math.min(b.y + BLOCKER_H, s.y));
+      const d = Math.hypot(s.x - nearX, s.y - nearY);
+      if (d === 0) return BLOCKER_R * 2;
+      return Math.max(0, BLOCKER_R - d);
+    }
+    function pushOutOfBlocker(b) {
+      const s = state;
+      const nearX = Math.max(b.x, Math.min(b.x + BLOCKER_W, s.x));
+      const nearY = Math.max(b.y, Math.min(b.y + BLOCKER_H, s.y));
+      const dx = s.x - nearX, dy = s.y - nearY, d = Math.hypot(dx, dy);
+      if (d > 0) {
+        if (d < BLOCKER_R) { s.x += dx / d * (BLOCKER_R - d); s.y += dy / d * (BLOCKER_R - d); }
+        return;
+      }
+      const gaps = [[s.x - b.x, -1, 0], [b.x + BLOCKER_W - s.x, 1, 0], [s.y - b.y, 0, -1], [b.y + BLOCKER_H - s.y, 0, 1]];
+      const [g, nx, ny] = gaps.reduce((a, c) => (c[0] < a[0] ? c : a));
+      s.x += nx * (g + BLOCKER_R); s.y += ny * (g + BLOCKER_R);
+    }
+    const DEATH_CAUSES = {
+      bug: { message: "A bug got Mona!" },
+      blocker: { message: "Mona got crushed by a blocker issue!", tip: "Copilot: Crushed by a blocker issue! Don't get pinned against a wall." },
+    };
+    const DEATH_FREEZE = 0.5, DEATH_FREEZE_REDUCED = 0.3, DEATH_FLIP = 0.18, DEATH_POP = 260, DEATH_GRAVITY = 1000;
+    // Every way Mona can die goes through startDeath(cause): the world freezes,
+    // then Mona flips upside down, pops up and falls off the board before game over.
+    // Reduced motion skips the flip/fall and shows game over after a short freeze.
+    function startDeath(cause = "bug") {
       if (state.death || state.over) return;
       updateTempo();
       keys.clear();
       shiftHeld = false;
       pointerSprint = false;
       state.sprinting = false;
-      state.death = { time: 0, y: state.y, angle: 0 };
+      state.death = { cause, time: 0, y: state.y, angle: 0 };
       callHooks("transport:changed");
-      $("tip").textContent = "Copilot: Blocker issue! That review really knocked us off course.";
+      const tip = (DEATH_CAUSES[cause] || DEATH_CAUSES.bug).tip;
+      if (tip) $("tip").textContent = tip;
       updateHud();
-      if (reducedMotion.matches) gameOver("A blocker issue stopped Mona!");
     }
     function updateDeath(dt) {
-      const d = state.death;
+      const d = state.death, message = (DEATH_CAUSES[d.cause] || DEATH_CAUSES.bug).message;
       d.time += dt;
-      if (reducedMotion.matches) return gameOver("A blocker issue stopped Mona!");
-      const flip = Math.max(0, Math.min(1, (d.time - 0.3) / 0.18));
-      d.angle = Math.PI * flip;
-      const fall = Math.max(0, d.time - 0.48);
-      d.y = state.y + 80 * fall + 450 * fall * fall;
-      if (d.y > SIZE + MONA_R * 2) gameOver("A blocker issue stopped Mona!");
+      if (reducedMotion.matches) {
+        d.angle = 0; d.y = state.y;
+        if (d.time >= DEATH_FREEZE_REDUCED) gameOver(message);
+        return;
+      }
+      const fall = Math.max(0, d.time - DEATH_FREEZE);
+      d.angle = Math.PI * Math.min(1, fall / DEATH_FLIP);
+      d.y = state.y - DEATH_POP * fall + DEATH_GRAVITY / 2 * fall * fall;
+      if (d.y > SIZE + MONA_R * 2 + 8) gameOver(message);
     }
-    function replaceCommit() { state.square = newSquare(); }
+    // Copilot heads spawn with every third commit (1/3 the commit rate) and fall at 2x commit speed.
+    // Followers stack up to MAX_FOLLOWERS in a trailing chain; each one absorbs one fatal hit.
+    const HEAD_R = 12, HEAD_SPEED_MULT = 2, HEAD_EVERY = 3, MAX_FOLLOWERS = 3, FOLLOW_GAP = 26, INVULN_SECONDS = 3;
+    function updateFollowers(dt) {
+      const s = state, ease = 1 - Math.exp(-10 * dt);
+      let tx = s.x, ty = s.y;
+      for (const f of s.followers) {
+        const d = Math.hypot(tx - f.x, ty - f.y);
+        if (d > FOLLOW_GAP) {
+          const k = (d - FOLLOW_GAP) / d * ease;
+          f.x += (tx - f.x) * k; f.y += (ty - f.y) * k;
+        }
+        tx = f.x; ty = f.y;
+      }
+    }
+    function collectHead(head) {
+      const s = state;
+      s.heads = s.heads.filter((h) => h !== head);
+      if (s.followers.length >= MAX_FOLLOWERS) return;
+      s.followers.push({ x: head.x, y: head.y });
+      $("tip").textContent = "Copilot: I'm right behind you! I'll take the next hit.";
+    }
+    // Single gate before any fatal hit: returns true only when the hit should kill Mona.
+    function hazardHit(event, detail) {
+      const s = state;
+      if (s.invuln > 0) return false;
+      const hazard = detail.enemy || detail.blocker;
+      if (!s.followers.length) { callHooks(event, detail); return true; }
+      const f = s.followers.shift();
+      hazard.zapped = true;
+      const hx = detail.blocker ? Math.max(hazard.x, Math.min(hazard.x + BLOCKER_W, s.x)) : hazard.x;
+      const hy = detail.blocker ? Math.max(hazard.y, Math.min(hazard.y + BLOCKER_H, s.y)) : hazard.y;
+      s.zaps.push({ x: hx, y: hy, fx: f.x, fy: f.y, t: 0 });
+      s.invuln = INVULN_SECONDS;
+      $("tip").textContent = "Copilot: I've got your back! Shield used - stay sharp.";
+      callHooks("copilot:shielded", { ...detail, follower: f });
+      return false;
+    }
+    function replaceCommit() {
+      state.square = newSquare();
+      if (++state.commitSpawns % HEAD_EVERY === 0) state.heads.push({ x: 30 + Math.random() * (SIZE - 60), y: -HEAD_R });
+    }
+    function drawCopilotHead(x, y, scale = 1) {
+      ctx.save();
+      ctx.translate(x, y); ctx.scale(scale, scale);
+      ctx.shadowColor = "#7ee787"; ctx.shadowBlur = 10;
+      ctx.fillStyle = "#7ee787";
+      ctx.beginPath(); ctx.ellipse(-8, -6, 5, 4, -0.4, 0, 7); ctx.ellipse(8, -6, 5, 4, 0.4, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.roundRect(-12, -6, 24, 17, 7); ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "#04170b";
+      ctx.beginPath(); ctx.roundRect(-10, -9, 9, 8, 3); ctx.roundRect(1, -9, 9, 8, 3); ctx.fill();
+      ctx.beginPath(); ctx.roundRect(-9, 1, 18, 8, 3); ctx.fill();
+      ctx.fillStyle = "#b3ffcb";
+      ctx.fillRect(-5, 3, 2.5, 4); ctx.fillRect(2.5, 3, 2.5, 4);
+      ctx.restore();
+    }
     function rewardCommit(detail) {
       const q = detail && detail.square;
       state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
@@ -669,6 +771,7 @@
       }
     }
     function drawPickups() {
+      ctx.save();
       ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "16px system-ui, sans-serif";
       for (const k of state.pickups) {
         const def = POWERUPS[k.id], left = 1 - k.age / PICKUP_LIFETIME;
@@ -679,6 +782,7 @@
         ctx.shadowBlur = 0;
         ctx.fillStyle = "#fff"; ctx.fillText(def.icon, k.x, k.y + 1);
       }
+      ctx.restore();
     }
     let powerupSlots = null;
     function updatePowerupHud() {
@@ -704,6 +808,7 @@
       }
     }
     function gameOver(cause = "A bug got Mona!") {
+      if (state.over) return;
       updateTempo();
       state.over = true;
       callHooks("transport:changed");
@@ -753,31 +858,44 @@
     }
     function drawBlockers() {
       for (const b of state.blockers) {
+        ctx.save();
+        ctx.translate(b.x, b.y);
         ctx.fillStyle = "#021409";
-        ctx.fillRect(b.x, b.y, BLOCKER_W, BLOCKER_H);
+        ctx.fillRect(0, 0, BLOCKER_W, BLOCKER_H);
         ctx.strokeStyle = "#39ef86"; ctx.lineWidth = 2;
-        ctx.strokeRect(b.x + 1, b.y + 1, BLOCKER_W - 2, BLOCKER_H - 2);
+        ctx.strokeRect(1, 1, BLOCKER_W - 2, BLOCKER_H - 2);
+        const padding = 8, maxWidth = BLOCKER_W - padding * 2;
+        ctx.beginPath();
+        ctx.rect(padding, padding, maxWidth, BLOCKER_H - padding * 2);
+        ctx.clip();
+        ctx.textAlign = "left"; ctx.textBaseline = "top";
         ctx.fillStyle = "#39ef86";
         ctx.font = "bold 11px monospace";
-        ctx.fillText("Blocker issue", b.x + 8, b.y + 17);
+        ctx.fillText("Blocker issue", padding, 8, maxWidth);
         ctx.font = "9px monospace";
         ctx.fillStyle = "#75b88c";
-        ctx.fillText("#" + b.number + " @reviewer", b.x + 8, b.y + 31);
-        ctx.fillText("Requested changes", b.x + 8, b.y + 43);
+        ctx.fillText("#" + b.number + " @reviewer", padding, 24, maxWidth);
+        ctx.fillText("Requested changes", padding, 36, maxWidth);
         ctx.fillStyle = "#b3ffcb";
         ctx.font = "10px monospace";
-        const lines = [""], maxWidth = BLOCKER_W - 16;
-        for (const word of b.lines.join(" ").split(" ")) {
-          const i = lines.length - 1, next = lines[i] ? lines[i] + " " + word : word;
-          if (ctx.measureText(next).width > maxWidth) lines.push(word);
-          else lines[i] = next;
+        const lines = [];
+        let text = b.lines.join(" ");
+        while (text && lines.length < 4) {
+          let end = text.length;
+          while (end > 1 && ctx.measureText(text.slice(0, end)).width > maxWidth) end--;
+          if (end < text.length) {
+            const space = text.lastIndexOf(" ", end);
+            if (space > 0) end = space;
+          }
+          lines.push(text.slice(0, end));
+          text = text.slice(end).trimStart();
         }
-        if (lines.length > 4) {
-          lines.length = 4;
-          while (ctx.measureText(lines[3] + "...").width > maxWidth) lines[3] = lines[3].slice(0, -1);
+        if (text) {
+          while (lines[3] && ctx.measureText(lines[3] + "...").width > maxWidth) lines[3] = lines[3].slice(0, -1);
           lines[3] += "...";
         }
-        lines.forEach((line, i) => ctx.fillText(line, b.x + 8, b.y + 61 + i * 12));
+        lines.forEach((line, i) => ctx.fillText(line, padding, 52 + i * 12, maxWidth));
+        ctx.restore();
       }
     }
     function drawCommit(g) {
@@ -813,10 +931,26 @@
       g.save();
       g.translate(s.x, s.death ? s.death.y : s.y);
       if (s.death) g.rotate(s.death.angle);
+      if (s.invuln > 0) {
+        // Reduced motion: a gentle steady fade with a halo instead of rapid blinking.
+        if (reducedMotion.matches) g.globalAlpha = 0.55;
+        else g.globalAlpha = Math.floor(s.invuln * 10) % 2 ? 0.2 : 1;
+        g.strokeStyle = "#7ee787"; g.lineWidth = 2;
+        g.beginPath(); g.arc(0, 0, MONA_R + 6, 0, 7); g.stroke();
+      }
       g.imageSmoothingEnabled = false;
       const sprite = monaSprites[s.facing][s.walkFrame];
       g.drawImage(sprite, -20, -20, sprite.width * 2, sprite.height * 2);
       g.restore();
+    }
+    // Projectiles: Copilot shield zaps fired at a hazard.
+    function drawProjectiles(g) {
+      for (const z of state.zaps) {
+        const a = 1 - z.t / 0.5;
+        g.strokeStyle = "rgba(126,231,135," + a + ")"; g.lineWidth = 3;
+        g.beginPath(); g.moveTo(z.fx, z.fy); g.lineTo(z.x, z.y); g.stroke();
+        g.beginPath(); g.arc(z.x, z.y, 8 + z.t * (reducedMotion.matches ? 40 : 120), 0, 7); g.stroke();
+      }
     }
 
     // CRT bloom: bloomed foreground is redrawn to a layer, downsampled (blur), and added back.
@@ -831,9 +965,9 @@
     };
     const layer = (n) => { const c = document.createElement("canvas"); c.width = c.height = n; return [c, c.getContext("2d")]; };
     const [bloomLayer, bctx] = layer(SIZE), [bloomHalf, hctx] = layer(SIZE / 2), [bloomQuarter, qctx] = layer(SIZE / 4), [bloomSmall, sctx] = layer(SIZE / 4);
-    const bloomDrawers = [drawCommit, drawBugs, drawMona];
+    const bloomDrawers = [drawCommit, drawBugs, drawProjectiles, drawMona];
     let bloomPulseAt = -Infinity;
-    // Projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer.
+    // Additional projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer.
     window.gameBloom = {
       config: BLOOM,
       add(drawFn) {
@@ -907,7 +1041,10 @@
       }
       drawPickups();
       drawPowerups("drawUnder");
+      for (const h of s.heads) drawCopilotHead(h.x, h.y);
+      drawProjectiles(ctx);
       drawBugs(ctx);
+      for (let i = s.followers.length - 1; i >= 0; i--) drawCopilotHead(s.followers[i].x, s.followers[i].y, 0.85);
       drawMona(ctx);
       drawPowerups("drawOver");
       drawBloom();
@@ -978,12 +1115,13 @@
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
-    onGameEvent("enemy:hit", () => gameOver());
-    onGameEvent("blocker:hit", startBlockerDeath);
+    onGameEvent("enemy:hit", () => startDeath("bug"));
+    onGameEvent("blocker:hit", () => startDeath("blocker"));
     onGameEvent("commit:collected", rewardCommit);
     onGameEvent("commit:missed", replaceCommit);
     onGameEvent("secret:collected", rewardSecret);
     onGameEvent("secret:exploded", ({ secret }) => explodeSecret(secret));
+    onGameEvent("copilot:collected", ({ head }) => collectHead(head));
     reset();
     cv.focus();
     requestAnimationFrame((t) => { last = t; frame(t); });
