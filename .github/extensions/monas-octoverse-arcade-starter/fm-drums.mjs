@@ -1,4 +1,7 @@
 const FLOOR = 0.0001;
+// Peak gains before the shared 0.3 output stage. Kick punch is a short 2nd-harmonic layer
+// that makes the kick read louder on small speakers without raising its sub peak.
+export const LEVELS = { output: 0.3, kick: 1, kickPunch: 0.35, hat: 0.45, snare: 0.15, snareNoise: 0.28 };
 
 export function createDrumSynth(context) {
   if (!context || typeof context.createOscillator !== "function") {
@@ -7,7 +10,7 @@ export function createDrumSynth(context) {
   if (context.state === "closed") throw new Error("The audio context is closed.");
 
   const output = context.createGain();
-  output.gain.value = 0.3;
+  output.gain.value = LEVELS.output;
   output.connect(context.destination);
   const voices = new Set();
   let noiseBuffer, disposed = false;
@@ -52,11 +55,18 @@ export function createDrumSynth(context) {
     depth.connect(carrier.frequency);
 
     if (kind === "kick") {
-      carrier.frequency.exponentialRampToValueAtTime(48, start + 0.12);
-      modulator.frequency.exponentialRampToValueAtTime(48, start + 0.1);
+      carrier.frequency.exponentialRampToValueAtTime(55, start + 0.12);
+      modulator.frequency.exponentialRampToValueAtTime(55, start + 0.1);
     }
-    const amplitude = envelope(kind === "kick" ? 0.9 : kind === "hat" ? 0.45 : 0.3, duration * 0.85);
+    const amplitude = envelope(LEVELS[kind], duration * 0.85);
     carrier.connect(amplitude);
+    if (kind === "kick") {
+      const punch = oscillator(300);
+      punch.frequency.exponentialRampToValueAtTime(110, start + 0.08);
+      const punchAmplitude = envelope(LEVELS.kickPunch, 0.12);
+      punch.connect(punchAmplitude);
+      punchAmplitude.connect(output);
+    }
     if (kind === "hat") {
       const filter = node(context.createBiquadFilter());
       filter.type = "highpass";
@@ -81,7 +91,7 @@ export function createDrumSynth(context) {
       filter.type = "highpass";
       filter.frequency.value = Math.min(1200, context.sampleRate * 0.4);
       filter.Q.value = 0.7;
-      const noiseAmplitude = envelope(0.6, duration * 0.85);
+      const noiseAmplitude = envelope(LEVELS.snareNoise, duration * 0.85);
       noise.connect(filter);
       filter.connect(noiseAmplitude);
       noiseAmplitude.connect(output);

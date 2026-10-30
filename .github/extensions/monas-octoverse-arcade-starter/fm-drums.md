@@ -1,7 +1,8 @@
 # FM drums
 
 `fm-drums.mjs` exports `createDrumSynth(context)`, using only Web Audio.
-Kick uses a pitch-dropping sine FM pair, the closed hat uses high-passed
+Kick uses a pitch-dropping sine FM pair plus a short second-harmonic punch layer for
+perceived loudness, the closed hat uses high-passed
 metallic FM, and snare combines a short FM tone with generated noise.
 There are no samples, downloads, dependencies, or build steps.
 
@@ -19,7 +20,8 @@ There are no samples, downloads, dependencies, or build steps.
 and must be finite and in [0, 1]; 0 is silent. Invalid times/velocities throw
 `RangeError`; a closed context or disposed synth throws `Error`.
 Each trigger returns its effective start time. Completed voices disconnect
-automatically. Output gain is 0.3 for headroom, not a limiter: avoid scheduling
+automatically. Per-voice peaks live in the exported `LEVELS` table (snare is mixed
+under the kick). Output gain is 0.3 for headroom, not a limiter: avoid scheduling
 unbounded simultaneous voices. Call `stop()` before closing an owned context.
 
 ## Gameplay integration

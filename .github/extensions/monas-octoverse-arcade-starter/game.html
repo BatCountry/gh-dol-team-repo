@@ -169,7 +169,8 @@
       ["Needs more abstraction.", "No, not that abstraction."],
       ["Looks good, except for", "the part where it changes."],
     ];
-    let state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
+    let state, last, shiftHeld = false, pointerSprint = false, lastDown = 0, activePointer = null;
+    const pointerDirs = new Set();
 
     const hooks = new Map();
     function onGameEvent(event, handler) {
@@ -315,8 +316,9 @@
       s.heads = s.heads.filter((h) => h.y < SIZE + HEAD_R);
       if (s.invuln > 0) s.invuln = Math.max(0, s.invuln - dt);
       s.zaps = s.zaps.map((z) => ({ ...z, t: z.t + dt })).filter((z) => z.t < 0.5);
-      let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
-      let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
+      const held = (d) => keys.has(d) || pointerDirs.has(d) ? 1 : 0;
+      let dx = held("right") - held("left");
+      let dy = held("down") - held("up");
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
       tickPowerups(dt);
       const moving = dx !== 0 || dy !== 0;
@@ -476,9 +478,6 @@
     function startDeath(cause = "bug") {
       if (state.death || state.over) return;
       updateTempo();
-      keys.clear();
-      shiftHeld = false;
-      pointerSprint = false;
       state.sprinting = false;
       state.death = { cause, time: 0, y: state.y, angle: 0 };
       callHooks("transport:changed");
@@ -961,7 +960,7 @@
       base: { width: 5, wash: 0, intensity: 0.7 },
       peak: { width: 12, wash: 0.35, intensity: 1.4 },
       decay: 0.18, // seconds of tempo time for the pulse to fall to ~37%
-      isPulseBeat: (beat) => beat % 4 === 2,
+      pulseEvery: 4, pulseOffset: 2, // gameHooks.onBeat(4, fn, 2) -> beats 2, 6, 10...
     };
     const layer = (n) => { const c = document.createElement("canvas"); c.width = c.height = n; return [c, c.getContext("2d")]; };
     const [bloomLayer, bctx] = layer(SIZE), [bloomHalf, hctx] = layer(SIZE / 2), [bloomQuarter, qctx] = layer(SIZE / 4), [bloomSmall, sctx] = layer(SIZE / 4);
@@ -977,9 +976,7 @@
       },
       level: () => bloomLevel(),
     };
-    window.gameHooks.on("beat", ({ beat, seconds }) => {
-      if (BLOOM.isPulseBeat(beat)) bloomPulseAt = seconds;
-    });
+    window.gameHooks.onBeat(BLOOM.pulseEvery, ({ seconds }) => { bloomPulseAt = seconds; }, BLOOM.pulseOffset);
     function bloomLevel() {
       const since = tempo.seconds - bloomPulseAt;
       return reducedMotion.matches || !(since >= 0) ? 0 : Math.exp(-since / BLOOM.decay);
@@ -1061,7 +1058,15 @@
       draw();
       requestAnimationFrame(frame);
     }
-    function restart() { reset(); keys.clear(); shiftHeld = false; pointerSprint = false; lastDown = 0; cv.focus(); }
+    function restart() { reset(); cv.focus(); }
+    const canSteer = () => !state.over && !state.death && !state.paused;
+    function releaseInput() {
+      keys.clear(); pointerDirs.clear();
+      shiftHeld = false; pointerSprint = false; activePointer = null; lastDown = 0;
+    }
+    // Reset, pause/resume, death, game over and tab visibility all fire transport:changed,
+    // so held keys/pointers are released in one place instead of in each transition.
+    onGameEvent("transport:changed", releaseInput);
 
     const MAP = { ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
                   ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" };
@@ -1070,7 +1075,6 @@
       updateTempo();
       state.paused = !state.paused;
       callHooks("transport:changed");
-      keys.clear();
       $("paused").classList.toggle("show", state.paused);
     }
     addEventListener("keydown", (e) => {
@@ -1078,24 +1082,26 @@
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) togglePause(); return; }
       if (state.paused) return;
       if ((state.over || state.death) && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
-      if (state.over || state.death) return;
+      if (!canSteer()) return;
       const d = MAP[e.key];
       if (d) { e.preventDefault(); state.facing = d; keys.add(d); }
     });
     addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; const d = MAP[e.key]; if (d) keys.delete(d); });
-    addEventListener("blur", () => { keys.clear(); shiftHeld = false; pointerSprint = false; });
+    addEventListener("blur", releaseInput);
     document.addEventListener("visibilitychange", () => {
       updateTempo();
       callHooks("transport:changed");
     });
+    // Steering follows only the pointer/finger that started on the board and keeps
+    // its own direction set, so lifting it never cancels held keyboard keys.
     function pointer(e) {
-      if (state.over || state.death || state.paused || (!e.buttons && e.pointerType !== "touch")) return;
+      if (e.pointerId !== activePointer || !canSteer()) return;
       const r = cv.getBoundingClientRect();
       const px = (e.clientX - r.left) * SIZE / r.width, py = (e.clientY - r.top) * SIZE / r.height;
-      keys.clear();
-      if (px < state.x - 8) keys.add("left"); else if (px > state.x + 8) keys.add("right");
-      if (py < state.y - 8) keys.add("up"); else if (py > state.y + 8) keys.add("down");
-      if (keys.size) {
+      pointerDirs.clear();
+      if (px < state.x - 8) pointerDirs.add("left"); else if (px > state.x + 8) pointerDirs.add("right");
+      if (py < state.y - 8) pointerDirs.add("up"); else if (py > state.y + 8) pointerDirs.add("down");
+      if (pointerDirs.size) {
         const horizontalDistance = Math.abs(px - state.x), verticalDistance = Math.abs(py - state.y);
         state.facing = horizontalDistance >= verticalDistance
           ? (px < state.x ? "left" : "right")
@@ -1103,15 +1109,21 @@
       }
     }
     cv.addEventListener("pointerdown", (e) => {
-      if (state.over || state.death || state.paused) return;
+      if (!canSteer() || (activePointer !== null && activePointer !== e.pointerId)) return;
       const now = performance.now();
       pointerSprint = now - lastDown < 350;
       lastDown = now;
+      activePointer = e.pointerId;
+      cv.setPointerCapture?.(e.pointerId);
       pointer(e);
     });
     cv.addEventListener("pointermove", pointer);
-    addEventListener("pointerup", () => { keys.clear(); pointerSprint = false; });
-    addEventListener("pointercancel", () => { keys.clear(); pointerSprint = false; });
+    function endPointer(e) {
+      if (e.pointerId !== activePointer) return;
+      activePointer = null; pointerDirs.clear(); pointerSprint = false;
+    }
+    addEventListener("pointerup", endPointer);
+    addEventListener("pointercancel", endPointer);
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
