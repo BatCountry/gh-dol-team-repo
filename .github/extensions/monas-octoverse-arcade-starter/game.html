@@ -18,10 +18,11 @@
     #staminaFill.sprinting { background: #d29922; }
     #staminaFill.empty { background: #f85149; }
     #hud { display: flex; justify-content: space-between; font-weight: 700; margin-bottom: .5rem; }
-    #powerups { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .5rem; }
-    #powerups:empty { display: none; }
-    .chip { flex: 1 1 10rem; font-size: .8rem; font-weight: 700; padding: .25rem .5rem; background: #161b22; border: 1px solid #30363d; border-radius: .5rem; }
-    .chipTrack { height: .35rem; margin-top: .2rem; background: #0d1117; border-radius: 1rem; overflow: hidden; }
+    #powerups { display: grid; grid-template-columns: repeat(var(--n, 9), 1fr); gap: .3rem; height: 2.6rem; margin-bottom: .5rem; }
+    .slot { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .2rem; min-width: 0; overflow: hidden; padding: 0 .25rem; background: #161b22; border: 1px solid #30363d; border-radius: .5rem; opacity: .35; filter: grayscale(1); }
+    .slot.active { opacity: 1; filter: none; }
+    .slot span { font-size: 1.1rem; line-height: 1; }
+    .chipTrack { width: 100%; height: .3rem; background: #0d1117; border-radius: 1rem; overflow: hidden; }
     .chipFill { height: 100%; width: 100%; }
     #stage { position: relative; }
     canvas { display: block; width: 100%; aspect-ratio: 1; background: #0d1117; border: 2px solid #30363d; border-radius: .75rem; touch-action: none; }
@@ -30,6 +31,7 @@
     #paused { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: .25rem; background: rgba(13,17,23,.8); border-radius: .75rem; text-align: center; }
     #paused h2 { margin: 0; font-size: 2rem; color: #58a6ff; }
     #paused p { margin: 0 0 .5rem; color: #c9d1d9; }
+    #newBest { color: #e3b341; font-weight: 700; margin: 0; }
     #over h2 { margin: 0; font-size: 2rem; color: #f85149; }
     button { padding: .7rem 1.2rem; color: #fff; font: inherit; font-weight: 700; background: #238636; border: 0; border-radius: .5rem; cursor: pointer; }
     button:hover { background: #1a7f37; }
@@ -45,12 +47,14 @@
     <h1>Mona's <span>Octoverse</span> Arcade</h1>
     <div id="hud"><span>Score: <span id="score">0</span></span><span>Speed: <span id="speed">1.0</span>x</span><span>Best: <span id="best">0</span></span></div>
     <div id="stamina"><span>Sprint</span><div id="staminaTrack" role="progressbar" aria-label="Sprint stamina" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><div id="staminaFill"></div></div></div>
-    <div id="powerups" aria-live="polite"></div>
+    <div id="powerups" role="group" aria-label="Powerups"></div>
     <div id="stage">
       <canvas id="game" width="480" height="480" tabindex="0" aria-label="Mona's Octoverse Arcade game"></canvas>
       <div id="over" role="alertdialog" aria-labelledby="overTitle">
         <h2 id="overTitle">Game over</h2>
         <p>A bug got Mona! Final score: <strong id="final">0</strong></p>
+        <p id="newBest" hidden>🏆 New high score!</p>
+        <p>High score: <strong id="overBest">0</strong></p>
         <button id="restart" type="button">Restart</button>
       </div>
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
@@ -75,7 +79,9 @@
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
     const PR_ACTIONS = ["Fix", "Improve", "Refactor", "Test", "Optimize", "Update"];
     const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
-    let best = 0, state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
+    let best = 0;
+    try { best = Number(localStorage.getItem("monaArcadeBest")) || 0; } catch (e) { /* storage unavailable */ }
+    let state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
 
     const hooks = new Map();
     function onGameEvent(event, handler) {
@@ -504,32 +510,40 @@
         ctx.fillStyle = "#fff"; ctx.fillText(def.icon, k.x, k.y + 1);
       }
     }
-    let powerupHudKey = "";
+    let powerupSlots = null;
     function updatePowerupHud() {
-      const box = $("powerups"), key = state.powerups.map((p) => p.id).join();
-      if (key !== powerupHudKey) {
-        powerupHudKey = key;
-        box.innerHTML = "";
-        for (const p of state.powerups) {
-          const def = POWERUPS[p.id], chip = document.createElement("div");
-          chip.className = "chip"; chip.dataset.id = p.id;
-          const label = document.createElement("span");
-          label.textContent = def.icon + " " + def.name;
+      const box = $("powerups");
+      if (!powerupSlots) {
+        powerupSlots = {};
+        for (const [id, def] of Object.entries(POWERUPS)) {
+          const slot = document.createElement("div");
+          slot.className = "slot"; slot.title = def.name; slot.setAttribute("aria-label", def.name);
+          const icon = document.createElement("span"); icon.textContent = def.icon;
           const track = document.createElement("div"); track.className = "chipTrack";
           const fill = document.createElement("div"); fill.className = "chipFill"; fill.style.background = def.color;
-          track.append(fill); chip.append(label, track); box.append(chip);
+          track.append(fill); slot.append(icon, track); box.append(slot);
+          powerupSlots[id] = { slot, fill };
         }
+        box.style.setProperty("--n", Object.keys(POWERUPS).length);
       }
-      for (const p of state.powerups) {
-        const fill = box.querySelector('[data-id="' + p.id + '"] .chipFill');
-        if (fill) fill.style.width = Math.max(0, p.remaining / POWERUPS[p.id].duration * 100) + "%";
+      for (const [id, { slot, fill }] of Object.entries(powerupSlots)) {
+        const p = state.powerups.find((x) => x.id === id);
+        slot.classList.toggle("active", !!p);
+        slot.style.borderColor = p ? POWERUPS[id].color : "";
+        fill.style.width = p ? Math.max(0, p.remaining / POWERUPS[id].duration * 100) + "%" : "0%";
       }
     }
     function gameOver() {
       updateTempo();
       state.over = true;
-      best = Math.max(best, state.score);
+      const isNew = state.score > best;
+      if (isNew) {
+        best = state.score;
+        try { localStorage.setItem("monaArcadeBest", String(best)); } catch (e) { /* storage unavailable */ }
+      }
       $("final").textContent = state.score;
+      $("overBest").textContent = best;
+      $("newBest").hidden = !isNew;
       $("best").textContent = best;
       $("over").classList.add("show");
       $("restart").focus();
