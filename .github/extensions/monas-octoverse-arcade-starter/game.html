@@ -50,7 +50,7 @@
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Move with arrow keys or WASD (or press/drag on the board). Hold Shift (or double-click/double-tap and hold) to sprint (stamina refills only when you collect commits). Press Enter or Space to restart.</p>
+    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Press Enter or Space to restart after game over.</p>
   </main>
   <script>
     const TIPS = [
@@ -65,10 +65,19 @@
     const cv = document.getElementById("game"), ctx = cv.getContext("2d");
     const $ = (id) => document.getElementById(id);
     const keys = new Set();
+    const PARALLAX_SPEEDS = [12, 26, 54];
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+    const PR_ACTIONS = ["Fix", "Improve", "Refactor", "Test", "Optimize", "Update"];
+    const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
     let best = 0, state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
 
+    function newPullRequest(y) {
+      const pick = (items) => items[Math.floor(Math.random() * items.length)];
+      const number = 1 + Math.floor(Math.random() * 9999);
+      return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
+    }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0 };
+      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
@@ -77,11 +86,7 @@
     }
     const speedMult = () => 1 + Math.min(state.time / 20, 3) + state.score * 0.03;
     function newSquare() {
-      for (let i = 0; i < 50; i++) {
-        const q = { x: 30 + Math.random() * (SIZE - 60), y: 30 + Math.random() * (SIZE - 60) };
-        if (Math.hypot(q.x - state.x, q.y - state.y) > 80) return q;
-      }
-      return { x: 40, y: 40 };
+      return { x: 30 + Math.random() * (SIZE - 60), y: -SQ };
     }
     function spawnBug() {
       const edge = Math.floor(Math.random() * 4), t = Math.random() * SIZE;
@@ -101,6 +106,16 @@
     function step(dt) {
       const s = state, m = speedMult();
       s.time += dt;
+      const scroll = PARALLAX_SPEEDS[2] * m * dt;
+      if (!reducedMotion.matches) {
+        s.backgroundOffsets = s.backgroundOffsets.map((offset, i) => (offset + PARALLAX_SPEEDS[i] * m * dt) % SIZE);
+        s.pullRequests = s.pullRequests.map((pr) => {
+          const y = pr.y + scroll;
+          return y > SIZE + 20 ? newPullRequest(y - SIZE - 20) : { ...pr, y };
+        });
+      }
+      s.square.y += scroll;
+      if (s.square.y > SIZE + SQ / 2) s.square = newSquare();
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
@@ -138,13 +153,40 @@
       $("over").classList.add("show");
       $("restart").focus();
     }
+    function drawBackground() {
+      const [grid, rain] = state.backgroundOffsets;
+      ctx.fillStyle = "#010603";
+      ctx.fillRect(0, 0, SIZE, SIZE);
+      ctx.strokeStyle = "rgba(0, 255, 110, 0.13)";
+      ctx.lineWidth = 1;
+      for (let x = -SIZE * 2; x <= SIZE * 3; x += 80) {
+        ctx.beginPath(); ctx.moveTo(SIZE / 2, -80); ctx.lineTo(x, SIZE); ctx.stroke();
+      }
+      for (let i = 0; i < 8; i++) {
+        const depth = ((i + grid / 60) % 8) / 8, y = depth * depth * SIZE;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SIZE, y); ctx.stroke();
+      }
+      ctx.font = "10px monospace";
+      for (let i = 0; i < 20; i++) {
+        const x = i * 25 + 4, head = ((i * 137) % SIZE + rain) % SIZE;
+        for (let j = 0; j < 5; j++) {
+          const y = (head - j * 12 + SIZE) % SIZE;
+          ctx.fillStyle = j === 0 ? "rgba(80, 255, 140, 0.28)" : "rgba(0, 180, 75, 0.10)";
+          ctx.fillText((i + j) % 3 === 0 ? "1" : "0", x, y);
+        }
+      }
+      ctx.font = "11px monospace";
+      ctx.fillStyle = "rgba(65, 225, 125, 0.40)";
+      for (const pr of state.pullRequests) {
+        ctx.beginPath(); ctx.moveTo(pr.x + 3, pr.y - 8); ctx.lineTo(pr.x + 3, pr.y + 2);
+        ctx.moveTo(pr.x + 3, pr.y - 3); ctx.lineTo(pr.x + 9, pr.y - 6); ctx.lineTo(pr.x + 9, pr.y - 9);
+        ctx.strokeStyle = "rgba(65, 225, 125, 0.40)"; ctx.stroke();
+        ctx.fillText(pr.text, pr.x + 17, pr.y);
+      }
+    }
     function draw() {
       const s = state;
-      ctx.clearRect(0, 0, SIZE, SIZE);
-      ctx.strokeStyle = "#161b22"; ctx.lineWidth = 1;
-      for (let i = 0; i <= SIZE; i += 30) {
-        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, SIZE); ctx.moveTo(0, i); ctx.lineTo(SIZE, i); ctx.stroke();
-      }
+      drawBackground();
       ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
       ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
       ctx.shadowBlur = 0;
