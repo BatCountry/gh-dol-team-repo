@@ -44,7 +44,7 @@
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Move with arrow keys or WASD (or press/drag on the board). Press Enter or Space to restart.</p>
+    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Esc pauses. Press Enter or Space to restart after game over.</p>
   </main>
   <script>
     const TIPS = [
@@ -61,13 +61,17 @@
     const keys = new Set();
     const PARALLAX_SPEEDS = [12, 26, 54];
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
-    const sky = ctx.createLinearGradient(0, 0, 0, SIZE);
-    sky.addColorStop(0, "#0b1326");
-    sky.addColorStop(1, "#0d1117");
+    const PR_ACTIONS = ["Fix", "Improve", "Refactor", "Test", "Optimize", "Update"];
+    const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
     let best = 0, state, last;
 
+    function newPullRequest(y) {
+      const pick = (items) => items[Math.floor(Math.random() * items.length)];
+      const number = 1 + Math.floor(Math.random() * 9999);
+      return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
+    }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, tipN: 0, backgroundOffsets: [0, 0, 0] };
+      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, tipN: 0, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
@@ -76,11 +80,7 @@
     }
     const speedMult = () => 1 + Math.min(state.time / 20, 3) + state.score * 0.03;
     function newSquare() {
-      for (let i = 0; i < 50; i++) {
-        const q = { x: 30 + Math.random() * (SIZE - 60), y: 30 + Math.random() * (SIZE - 60) };
-        if (Math.hypot(q.x - state.x, q.y - state.y) > 80) return q;
-      }
-      return { x: 40, y: 40 };
+      return { x: 30 + Math.random() * (SIZE - 60), y: -SQ };
     }
     function spawnBug() {
       const edge = Math.floor(Math.random() * 4), t = Math.random() * SIZE;
@@ -95,9 +95,16 @@
     function step(dt) {
       const s = state, m = speedMult();
       s.time += dt;
+      const scroll = PARALLAX_SPEEDS[2] * m * dt;
       if (!reducedMotion.matches) {
         s.backgroundOffsets = s.backgroundOffsets.map((offset, i) => (offset + PARALLAX_SPEEDS[i] * m * dt) % SIZE);
+        s.pullRequests = s.pullRequests.map((pr) => {
+          const y = pr.y + scroll;
+          return y > SIZE + 20 ? newPullRequest(y - SIZE - 20) : { ...pr, y };
+        });
       }
+      s.square.y += scroll;
+      if (s.square.y > SIZE + SQ / 2) s.square = newSquare();
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
@@ -132,30 +139,34 @@
       $("restart").focus();
     }
     function drawBackground() {
-      const [stars, clouds, streaks] = state.backgroundOffsets;
-      ctx.fillStyle = sky;
+      const [grid, rain] = state.backgroundOffsets;
+      ctx.fillStyle = "#010603";
       ctx.fillRect(0, 0, SIZE, SIZE);
-      ctx.fillStyle = "#526882";
-      for (let i = 0; i < 48; i++) {
-        const x = (i * 137 + 19) % SIZE, y = ((i * 83 + 11) % SIZE + stars) % SIZE;
-        ctx.fillRect(x, y, i % 4 === 0 ? 2 : 1, 2);
-      }
-      ctx.fillStyle = "rgba(88, 125, 185, 0.06)";
-      for (let i = 0; i < 6; i++) {
-        const x = i % 2 === 0 ? 15 : SIZE - 15;
-        const y = ((i * 97 + 35) % SIZE + clouds) % SIZE;
-        // Repeat across the tile boundary so clouds enter and leave smoothly.
-        for (const tile of [-SIZE, 0, SIZE]) {
-          ctx.beginPath(); ctx.ellipse(x, y + tile, 100, 34, -0.25, 0, Math.PI * 2); ctx.fill();
-        }
-      }
-      ctx.strokeStyle = "rgba(121, 177, 218, 0.24)";
+      ctx.strokeStyle = "rgba(0, 255, 110, 0.13)";
       ctx.lineWidth = 1;
-      for (let i = 0; i < 12; i++) {
-        const x = (i * 113 + 43) % SIZE, y = ((i * 157 + 23) % SIZE + streaks) % SIZE;
-        for (const tile of [-SIZE, 0]) {
-          ctx.beginPath(); ctx.moveTo(x, y + tile); ctx.lineTo(x, y + tile + 14); ctx.stroke();
+      for (let x = -SIZE * 2; x <= SIZE * 3; x += 80) {
+        ctx.beginPath(); ctx.moveTo(SIZE / 2, -80); ctx.lineTo(x, SIZE); ctx.stroke();
+      }
+      for (let i = 0; i < 8; i++) {
+        const depth = ((i + grid / 60) % 8) / 8, y = depth * depth * SIZE;
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SIZE, y); ctx.stroke();
+      }
+      ctx.font = "10px monospace";
+      for (let i = 0; i < 20; i++) {
+        const x = i * 25 + 4, head = ((i * 137) % SIZE + rain) % SIZE;
+        for (let j = 0; j < 5; j++) {
+          const y = (head - j * 12 + SIZE) % SIZE;
+          ctx.fillStyle = j === 0 ? "rgba(80, 255, 140, 0.28)" : "rgba(0, 180, 75, 0.10)";
+          ctx.fillText((i + j) % 3 === 0 ? "1" : "0", x, y);
         }
+      }
+      ctx.font = "11px monospace";
+      ctx.fillStyle = "rgba(65, 225, 125, 0.40)";
+      for (const pr of state.pullRequests) {
+        ctx.beginPath(); ctx.moveTo(pr.x + 3, pr.y - 8); ctx.lineTo(pr.x + 3, pr.y + 2);
+        ctx.moveTo(pr.x + 3, pr.y - 3); ctx.lineTo(pr.x + 9, pr.y - 6); ctx.lineTo(pr.x + 9, pr.y - 9);
+        ctx.strokeStyle = "rgba(65, 225, 125, 0.40)"; ctx.stroke();
+        ctx.fillText(pr.text, pr.x + 17, pr.y);
       }
     }
     function draw() {
