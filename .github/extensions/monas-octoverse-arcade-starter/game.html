@@ -44,13 +44,13 @@
       <canvas id="game" width="480" height="480" tabindex="0" aria-label="Mona's Octoverse Arcade game"></canvas>
       <div id="over" role="alertdialog" aria-labelledby="overTitle">
         <h2 id="overTitle">Game over</h2>
-        <p>A bug got Mona! Final score: <strong id="final">0</strong></p>
+        <p><span id="cause">A bug got Mona!</span> Final score: <strong id="final">0</strong></p>
         <button id="restart" type="button">Restart</button>
       </div>
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Press Enter or Space to restart after game over.</p>
+    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Dodge the green Blocker issue review cards! Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Press Enter or Space to restart after a hit.</p>
   </main>
   <script>
     const TIPS = [
@@ -69,6 +69,17 @@
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
     const PR_ACTIONS = ["Fix", "Improve", "Refactor", "Test", "Optimize", "Update"];
     const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
+    const BLOCKER_W = SIZE / 4, BLOCKER_H = 112;
+    const BLOCKER_COMMENTS = [
+      ["Vanilla JS? Bold choice.", "Have we tried fewer features?"],
+      ["This could have been", "a very short meeting."],
+      ["Love the ambition.", "Requesting changes anyway."],
+      ["Works on your machine?", "A compelling test strategy."],
+      ["Just one tiny suggestion:", "please rewrite the whole thing."],
+      ["Why ship today when we", "could bikeshed until Friday?"],
+      ["Needs more abstraction.", "No, not that abstraction."],
+      ["Looks good, except for", "the part where it changes."],
+    ];
     let best = 0, state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
 
     const hooks = new Map();
@@ -88,7 +99,7 @@
     }
     // on() runs handlers in registration order and returns an unsubscribe function.
     // onBeat(4, fn, 1) runs on beats 1, 5, 9...; beat 1 starts after one interval.
-    // Gameplay events: enemy:hit { enemy }, commit:collected / commit:missed { square }.
+    // Gameplay events: enemy:hit { enemy }, blocker:hit { blocker }, commit:collected / commit:missed { square }.
     // Secret events: secret:collected / secret:exploded { secret }.
     // beat payload: { beat, parity: "odd" | "even", bpm, seconds } at the beat boundary.
     window.gameHooks = {
@@ -107,13 +118,13 @@
     const TEMPO_MIN = 60, TEMPO_MAX = 180, SPEED_RAMP_SECONDS = 60;
     // Presentation API: read window.tempo in draw() or other scripts.
     // beat is zero-based; phase rises from 0 to 1, pulse falls from 1 to 0.
-    // This silent clock freezes on pause/game-over and resets on restart.
+    // This silent clock freezes on pause/death/game-over and resets on restart.
     // BPM follows the gameplay speed timer from 60 to 180 over 60 seconds, ignoring score.
     // Beat 0 is the initial even state; emitted beats start at 1 (odd), then 2 (even).
     const tempo = window.tempo = { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 };
     let tempoLast, tempoBeats = 0, dispatchedBeat = 0, dispatchingBeats = false;
     function updateTempo(now = performance.now()) {
-      const elapsed = !state.over && !state.paused ? Math.max(0, now - tempoLast) / 1000 : 0;
+      const elapsed = !state.over && !state.paused && !state.death ? Math.max(0, now - tempoLast) / 1000 : 0;
       const startSeconds = tempo.seconds, startBeats = tempoBeats, startBpm = tempo.bpm;
       const bpm = TEMPO_MIN + (TEMPO_MAX - TEMPO_MIN) * Math.min(state.time / SPEED_RAMP_SECONDS, 1);
       // Integrate BPM instead of multiplying total time by the changing tempo.
@@ -131,7 +142,7 @@
       // Deliver crossed beats even after a slow frame; these are not audio scheduling callbacks.
       dispatchingBeats = true;
       try {
-        while (dispatchedBeat < tempo.beat && state === currentState && !state.over && !state.paused) {
+        while (dispatchedBeat < tempo.beat && state === currentState && !state.over && !state.paused && !state.death) {
           const beat = ++dispatchedBeat;
           const crossingBpm = Math.sqrt(Math.max(0, startBpm ** 2 + 120 * slope * (beat - startBeats)));
           const offset = 120 * (beat - startBeats) / (startBpm + crossingBpm);
@@ -146,7 +157,7 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       Object.assign(tempo, { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 });
       tempoLast = performance.now();
       tempoBeats = 0;
@@ -154,6 +165,7 @@
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
+      $("cause").textContent = "A bug got Mona!";
       updateHud();
       $("tip").textContent = "Copilot: I'm here to help. Collect green commits and dodge the bugs!";
     }
@@ -213,6 +225,8 @@
       s.x = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.x + dx * v * dt));
       s.y = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.y + dy * v * dt));
 
+      updateBlockers(dt, m);
+      if (s.death || s.over) return;
       s.spawn -= dt;
       if (s.spawn <= 0) { spawnBug(); s.spawn = Math.max(0.8, 3 - s.time / 25); }
       for (const b of s.bugs) {
@@ -274,6 +288,58 @@
         state.bugs.push({ x: q.x, y: q.y, type: pickBugType(), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp });
       }
     }
+    function updateBlockers(dt, m) {
+      const s = state;
+      s.blockerTimer -= dt;
+      if (s.blockerTimer <= 0) {
+        s.blockerTimer = 10 + Math.random() * 5;
+        if (s.blockers.length === 0) {
+          s.blockers.push({
+            x: 12 + Math.random() * (SIZE - BLOCKER_W - 24), y: -BLOCKER_H,
+            vx: Math.random() < 0.5 ? -22 : 22,
+            number: 1 + Math.floor(Math.random() * 9999),
+            lines: BLOCKER_COMMENTS[Math.floor(Math.random() * BLOCKER_COMMENTS.length)],
+          });
+        }
+      }
+      for (const b of s.blockers) {
+        b.x += b.vx * dt;
+        if (b.x < 12 || b.x > SIZE - BLOCKER_W - 12) {
+          b.x = Math.max(12, Math.min(SIZE - BLOCKER_W - 12, b.x));
+          b.vx *= -1;
+        }
+        b.y += (40 + 18 * Math.min(m, 5)) * dt;
+        const nearX = Math.max(b.x, Math.min(b.x + BLOCKER_W, s.x));
+        const nearY = Math.max(b.y, Math.min(b.y + BLOCKER_H, s.y));
+        if (Math.hypot(s.x - nearX, s.y - nearY) < MONA_R - 2) {
+          callHooks("blocker:hit", { blocker: b });
+          return;
+        }
+      }
+      s.blockers = s.blockers.filter((b) => b.y < SIZE + 12);
+    }
+    function startBlockerDeath() {
+      if (state.death || state.over) return;
+      updateTempo();
+      keys.clear();
+      shiftHeld = false;
+      pointerSprint = false;
+      state.sprinting = false;
+      state.death = { time: 0, y: state.y, angle: 0 };
+      $("tip").textContent = "Copilot: Blocker issue! That review really knocked us off course.";
+      updateHud();
+      if (reducedMotion.matches) gameOver("A blocker issue stopped Mona!");
+    }
+    function updateDeath(dt) {
+      const d = state.death;
+      d.time += dt;
+      if (reducedMotion.matches) return gameOver("A blocker issue stopped Mona!");
+      const flip = Math.max(0, Math.min(1, (d.time - 0.3) / 0.18));
+      d.angle = Math.PI * flip;
+      const fall = Math.max(0, d.time - 0.48);
+      d.y = state.y + 80 * fall + 450 * fall * fall;
+      if (d.y > SIZE + MONA_R * 2) gameOver("A blocker issue stopped Mona!");
+    }
     function replaceCommit() { state.square = newSquare(); }
     function rewardCommit() {
       state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
@@ -284,10 +350,11 @@
       state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
       addScore(SECRET_BONUS);
     }
-    function gameOver() {
+    function gameOver(cause = "A bug got Mona!") {
       updateTempo();
       state.over = true;
       best = Math.max(best, state.score);
+      $("cause").textContent = cause;
       $("final").textContent = state.score;
       $("best").textContent = best;
       $("over").classList.add("show");
@@ -324,9 +391,39 @@
         ctx.fillText(pr.text, pr.x + 17, pr.y);
       }
     }
+    function drawBlockers() {
+      for (const b of state.blockers) {
+        ctx.fillStyle = "#021409";
+        ctx.fillRect(b.x, b.y, BLOCKER_W, BLOCKER_H);
+        ctx.strokeStyle = "#39ef86"; ctx.lineWidth = 2;
+        ctx.strokeRect(b.x + 1, b.y + 1, BLOCKER_W - 2, BLOCKER_H - 2);
+        ctx.fillStyle = "#39ef86";
+        ctx.font = "bold 11px monospace";
+        ctx.fillText("Blocker issue", b.x + 8, b.y + 17);
+        ctx.font = "9px monospace";
+        ctx.fillStyle = "#75b88c";
+        ctx.fillText("#" + b.number + " @reviewer", b.x + 8, b.y + 31);
+        ctx.fillText("Requested changes", b.x + 8, b.y + 43);
+        ctx.fillStyle = "#b3ffcb";
+        ctx.font = "10px monospace";
+        const lines = [""], maxWidth = BLOCKER_W - 16;
+        for (const word of b.lines.join(" ").split(" ")) {
+          const i = lines.length - 1, next = lines[i] ? lines[i] + " " + word : word;
+          if (ctx.measureText(next).width > maxWidth) lines.push(word);
+          else lines[i] = next;
+        }
+        if (lines.length > 4) {
+          lines.length = 4;
+          while (ctx.measureText(lines[3] + "...").width > maxWidth) lines[3] = lines[3].slice(0, -1);
+          lines[3] += "...";
+        }
+        lines.forEach((line, i) => ctx.fillText(line, b.x + 8, b.y + 61 + i * 12));
+      }
+    }
     function draw() {
       const s = state;
       drawBackground();
+      drawBlockers();
       ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
       ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
       ctx.shadowBlur = 0;
@@ -360,7 +457,10 @@
         ctx.fillStyle = "#fff";
         ctx.fillRect(b.x - 5 * k, b.y - 4 * k, 3 * k, 3 * k); ctx.fillRect(b.x + 2 * k, b.y - 4 * k, 3 * k, 3 * k);
       }
-      const x = s.x, y = s.y;
+      ctx.save();
+      ctx.translate(s.x, s.death ? s.death.y : s.y);
+      if (s.death) ctx.rotate(s.death.angle);
+      const x = 0, y = 0;
       ctx.fillStyle = "#e6edf3";
       ctx.beginPath(); ctx.moveTo(x - 14, y - 4); ctx.lineTo(x - 14, y - 18); ctx.lineTo(x - 5, y - 11); ctx.lineTo(x + 5, y - 11); ctx.lineTo(x + 14, y - 18); ctx.lineTo(x + 14, y - 4); ctx.fill();
       ctx.beginPath(); ctx.arc(x, y, MONA_R - 2, 0, 7); ctx.fill();
@@ -368,16 +468,21 @@
       ctx.fillStyle = "#0d1117";
       ctx.beginPath(); ctx.arc(x - 5, y - 2, 2.5, 0, 7); ctx.arc(x + 5, y - 2, 2.5, 0, 7); ctx.fill();
       ctx.fillRect(x - 3, y + 3, 6, 2);
+      ctx.restore();
     }
     function frame(t) {
       const dt = Math.min((t - last) / 1000 || 0, 0.05);
       last = t;
       updateTempo();
-      if (!state.over && !state.paused) { step(dt); if (!state.over) updateHud(); }
+      if (!state.over && !state.paused) {
+        if (state.death) updateDeath(dt);
+        else step(dt);
+        if (!state.over) updateHud();
+      }
       draw();
       requestAnimationFrame(frame);
     }
-    function restart() { reset(); keys.clear(); pointerSprint = false; cv.focus(); }
+    function restart() { reset(); keys.clear(); shiftHeld = false; pointerSprint = false; lastDown = 0; cv.focus(); }
 
     const MAP = { ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
                   ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" };
@@ -392,14 +497,15 @@
       if (e.key === "Shift") shiftHeld = true;
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) togglePause(); return; }
       if (state.paused) return;
-      if (state.over && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
+      if ((state.over || state.death) && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
+      if (state.over || state.death) return;
       const d = MAP[e.key];
       if (d) { e.preventDefault(); keys.add(d); }
     });
     addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; const d = MAP[e.key]; if (d) keys.delete(d); });
     addEventListener("blur", () => { keys.clear(); shiftHeld = false; pointerSprint = false; });
     function pointer(e) {
-      if (state.paused || (!e.buttons && e.pointerType !== "touch")) return;
+      if (state.over || state.death || state.paused || (!e.buttons && e.pointerType !== "touch")) return;
       const r = cv.getBoundingClientRect();
       const px = (e.clientX - r.left) * SIZE / r.width, py = (e.clientY - r.top) * SIZE / r.height;
       keys.clear();
@@ -407,6 +513,7 @@
       if (py < state.y - 8) keys.add("up"); else if (py > state.y + 8) keys.add("down");
     }
     cv.addEventListener("pointerdown", (e) => {
+      if (state.over || state.death || state.paused) return;
       const now = performance.now();
       pointerSprint = now - lastDown < 350;
       lastDown = now;
@@ -418,7 +525,8 @@
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
-    onGameEvent("enemy:hit", gameOver);
+    onGameEvent("enemy:hit", () => gameOver());
+    onGameEvent("blocker:hit", startBlockerDeath);
     onGameEvent("commit:collected", rewardCommit);
     onGameEvent("commit:missed", replaceCommit);
     onGameEvent("secret:collected", rewardSecret);
