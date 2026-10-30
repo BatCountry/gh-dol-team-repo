@@ -1042,14 +1042,18 @@
     const layer = (n) => { const c = document.createElement("canvas"); c.width = c.height = n; return [c, c.getContext("2d")]; };
     const [bloomLayer, bctx] = layer(SIZE), [bloomHalf, hctx] = layer(SIZE / 2), [bloomQuarter, qctx] = layer(SIZE / 4), [bloomSmall, sctx] = layer(SIZE / 4);
     const bloomDrawers = [drawCommit, drawBugs, drawProjectiles, drawBullets, drawMona];
+    // Steady drawers keep the base glow but skip the beat pulse (Mona was blown out by it).
+    const steadyBloom = new Set([drawMona]);
     let bloomPulseAt = -Infinity;
-    // Additional projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer.
+    // Additional projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer;
+    // pass { pulse: false } to keep a drawer at the base glow.
     window.gameBloom = {
       config: BLOOM,
-      add(drawFn) {
+      add(drawFn, { pulse = true } = {}) {
         if (typeof drawFn !== "function") throw new TypeError("Bloom drawer must be a function");
         bloomDrawers.push(drawFn);
-        return () => { const i = bloomDrawers.indexOf(drawFn); if (i >= 0) bloomDrawers.splice(i, 1); };
+        if (!pulse) steadyBloom.add(drawFn);
+        return () => { const i = bloomDrawers.indexOf(drawFn); if (i >= 0) bloomDrawers.splice(i, 1); steadyBloom.delete(drawFn); };
       },
       level: () => bloomLevel(),
     };
@@ -1059,9 +1063,17 @@
       return reducedMotion.matches || !(since >= 0) ? 0 : Math.exp(-since / BLOOM.decay);
     }
     function drawBloom() {
-      const k = bloomLevel(), { base, peak } = BLOOM, mix = (key) => base[key] + (peak[key] - base[key]) * k;
+      const k = bloomLevel();
+      // Off-pulse everything shares one pass; during a pulse steady drawers get their own base-level pass.
+      if (k < 0.005) return bloomPass(bloomDrawers, 0);
+      bloomPass(bloomDrawers.filter((f) => !steadyBloom.has(f)), k);
+      bloomPass(bloomDrawers.filter((f) => steadyBloom.has(f)), 0);
+    }
+    function bloomPass(drawers, k) {
+      if (!drawers.length) return;
+      const { base, peak } = BLOOM, mix = (key) => base[key] + (peak[key] - base[key]) * k;
       bctx.clearRect(0, 0, SIZE, SIZE);
-      for (const drawFn of bloomDrawers) {
+      for (const drawFn of drawers) {
         bctx.save();
         try { drawFn(bctx); } catch (error) { console.error("Bloom drawer failed", error); }
         bctx.restore();
