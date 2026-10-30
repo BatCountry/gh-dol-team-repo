@@ -75,6 +75,82 @@
     const cv = document.getElementById("game"), ctx = cv.getContext("2d");
     const $ = (id) => document.getElementById(id);
     const keys = new Set();
+    const LEG_ROWS = 6, WALK_FRAMES = 4;
+    function legRows(walkFrame) {
+      return Array.from({ length: LEG_ROWS }, (_, row) => {
+        const cells = Array(12).fill(".");
+        const sway = Math.round(Math.sin((walkFrame / WALK_FRAMES) * Math.PI * 2 + row * 0.8) * Math.min(1, row / 2));
+        [2, 5, 8].forEach((base) => {
+          const x = base + sway;
+          cells[x] = "W";
+          if (row < LEG_ROWS - 1) cells[x + 1] = "W";
+        });
+        return cells.join("");
+      });
+    }
+    function createMonaSprite(facing, walkFrame) {
+      const sprite = document.createElement("canvas");
+      sprite.width = 20;
+      sprite.height = 14 + LEG_ROWS;
+      const pixel = sprite.getContext("2d");
+
+      const cat = [
+        "....W...W...",
+        "...WW...WW..",
+        "..WWW...WWW.",
+        "..WWWWWWWWW.",
+        ".WWWWWWWWWWW",
+        "WWWWWWWWWWWW",
+        "WWWWWWWWWWWW",
+        "WWWWWWWWWWWW",
+        ".WWWWWWWW...",
+        "..WWWWWWWW..",
+        "...WWWWWW...",
+        ...legRows(walkFrame),
+      ];
+      const colors = { W: "#e6edf3" };
+      cat.forEach((row, y) => [...row].forEach((cell, x) => {
+        if (colors[cell]) {
+          pixel.fillStyle = colors[cell];
+          pixel.fillRect(x + 4, y + 3, 1, 1);
+        }
+      }));
+
+      const gaze = {
+        left: { eyes: [7, 11], eyeY: 9, nose: 8 },
+        right: { eyes: [9, 13], eyeY: 9, nose: 11 },
+        up: { eyes: [8, 12], eyeY: 8, nose: 10 },
+        down: { eyes: [8, 12], eyeY: 10, nose: 10 },
+      }[facing];
+      pixel.fillStyle = "#0d1117";
+      for (const x of gaze.eyes) pixel.fillRect(x, gaze.eyeY, 1, 1);
+      pixel.fillStyle = "#ff9bce";
+      pixel.fillRect(gaze.nose, 12, 1, 1);
+
+      // Helmet is drawn over Mona so the glass and rim read as in front of her.
+      const inHelmet = (x, y) => Math.hypot((x - 9.5) / 9, (y - 7.3) / 6.2) <= 1;
+      for (let y = 0; y < 15; y++) for (let x = 0; x < 20; x++) {
+        if (!inHelmet(x, y)) continue;
+        const rim = !inHelmet(x - 1, y) || !inHelmet(x + 1, y) || !inHelmet(x, y - 1) || !inHelmet(x, y + 1);
+        pixel.fillStyle = rim ? (y >= 12 ? "#58a6ff" : "#9be9ff") : "rgba(88,166,255,.16)";
+        pixel.fillRect(x, y, 1, 1);
+      }
+
+      pixel.fillStyle = "rgba(255,255,255,.8)";
+      pixel.fillRect(3, 5, 1, 2);
+      pixel.fillRect(4, 4, 1, 1);
+      pixel.fillStyle = "rgba(210,244,255,.65)";
+      pixel.fillRect(15, 6, 1, 2);
+      pixel.fillRect(16, 8, 1, 1);
+      return sprite;
+    }
+    const WALK_BEAT = 0.1;
+    const monaSprites = Object.fromEntries(
+      ["left", "right", "up", "down"].map((direction) => [
+        direction,
+        Array.from({ length: WALK_FRAMES }, (_, frame) => createMonaSprite(direction, frame)),
+      ]),
+    );
     const PARALLAX_SPEEDS = [24, 18, 12];
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
     const PR_ACTIONS = ["Fix", "Improve", "Refactor", "Test", "Optimize", "Update"];
@@ -169,7 +245,7 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       Object.assign(tempo, { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 });
       tempoLast = performance.now();
       tempoBeats = 0;
@@ -233,6 +309,16 @@
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
       tickPowerups(dt);
       const moving = dx !== 0 || dy !== 0;
+      if (moving && !reducedMotion.matches) {
+        s.walkBeat += dt;
+        if (s.walkBeat >= WALK_BEAT) {
+          s.walkFrame = (s.walkFrame + 1) % WALK_FRAMES;
+          s.walkBeat %= WALK_BEAT;
+        }
+      } else {
+        s.walkFrame = 0;
+        s.walkBeat = 0;
+      }
       s.sprinting = (shiftHeld || pointerSprint) && moving && s.stamina > 0;
       if (s.sprinting) s.stamina = Math.max(0, s.stamina - SPRINT_DRAIN * dt);
       const v = (190 + Math.min(m, 4) * 10) * (s.sprinting ? SPRINT_MULT : 1) * powerupSpeedMult();
@@ -367,27 +453,38 @@
       const [g, nx, ny] = gaps.reduce((a, c) => (c[0] < a[0] ? c : a));
       s.x += nx * (g + BLOCKER_R); s.y += ny * (g + BLOCKER_R);
     }
-    function startBlockerDeath() {
+    const DEATH_CAUSES = {
+      bug: { message: "A bug got Mona!" },
+      blocker: { message: "Mona got crushed by a blocker issue!", tip: "Copilot: Crushed by a blocker issue! Don't get pinned against a wall." },
+    };
+    const DEATH_FREEZE = 0.5, DEATH_FREEZE_REDUCED = 0.3, DEATH_FLIP = 0.18, DEATH_POP = 260, DEATH_GRAVITY = 1000;
+    // Every way Mona can die goes through startDeath(cause): the world freezes,
+    // then Mona flips upside down, pops up and falls off the board before game over.
+    // Reduced motion skips the flip/fall and shows game over after a short freeze.
+    function startDeath(cause = "bug") {
       if (state.death || state.over) return;
       updateTempo();
       keys.clear();
       shiftHeld = false;
       pointerSprint = false;
       state.sprinting = false;
-      state.death = { time: 0, y: state.y, angle: 0 };
-      $("tip").textContent = "Copilot: Crushed by a blocker issue! Don't get pinned against a wall.";
+      state.death = { cause, time: 0, y: state.y, angle: 0 };
+      const tip = (DEATH_CAUSES[cause] || DEATH_CAUSES.bug).tip;
+      if (tip) $("tip").textContent = tip;
       updateHud();
-      if (reducedMotion.matches) gameOver("Mona got crushed by a blocker issue!");
     }
     function updateDeath(dt) {
-      const d = state.death;
+      const d = state.death, message = (DEATH_CAUSES[d.cause] || DEATH_CAUSES.bug).message;
       d.time += dt;
-      if (reducedMotion.matches) return gameOver("Mona got crushed by a blocker issue!");
-      const flip = Math.max(0, Math.min(1, (d.time - 0.3) / 0.18));
-      d.angle = Math.PI * flip;
-      const fall = Math.max(0, d.time - 0.48);
-      d.y = state.y + 80 * fall + 450 * fall * fall;
-      if (d.y > SIZE + MONA_R * 2) gameOver("Mona got crushed by a blocker issue!");
+      if (reducedMotion.matches) {
+        d.angle = 0; d.y = state.y;
+        if (d.time >= DEATH_FREEZE_REDUCED) gameOver(message);
+        return;
+      }
+      const fall = Math.max(0, d.time - DEATH_FREEZE);
+      d.angle = Math.PI * Math.min(1, fall / DEATH_FLIP);
+      d.y = state.y - DEATH_POP * fall + DEATH_GRAVITY / 2 * fall * fall;
+      if (d.y > SIZE + MONA_R * 2 + 8) gameOver(message);
     }
     function replaceCommit() { state.square = newSquare(); }
     function rewardCommit(detail) {
@@ -640,6 +737,7 @@
       }
     }
     function gameOver(cause = "A bug got Mona!") {
+      if (state.over) return;
       updateTempo();
       state.over = true;
       const isNew = state.score > best;
@@ -762,14 +860,9 @@
       ctx.save();
       ctx.translate(s.x, s.death ? s.death.y : s.y);
       if (s.death) ctx.rotate(s.death.angle);
-      const x = 0, y = 0;
-      ctx.fillStyle = "#e6edf3";
-      ctx.beginPath(); ctx.moveTo(x - 14, y - 4); ctx.lineTo(x - 14, y - 18); ctx.lineTo(x - 5, y - 11); ctx.lineTo(x + 5, y - 11); ctx.lineTo(x + 14, y - 18); ctx.lineTo(x + 14, y - 4); ctx.fill();
-      ctx.beginPath(); ctx.arc(x, y, MONA_R - 2, 0, 7); ctx.fill();
-      for (let i = -2; i <= 2; i++) { ctx.beginPath(); ctx.arc(x + i * 6, y + 14, 4, 0, 7); ctx.fill(); }
-      ctx.fillStyle = "#0d1117";
-      ctx.beginPath(); ctx.arc(x - 5, y - 2, 2.5, 0, 7); ctx.arc(x + 5, y - 2, 2.5, 0, 7); ctx.fill();
-      ctx.fillRect(x - 3, y + 3, 6, 2);
+      ctx.imageSmoothingEnabled = false;
+      const sprite = monaSprites[s.facing][s.walkFrame];
+      ctx.drawImage(sprite, -20, -20, sprite.width * 2, sprite.height * 2);
       ctx.restore();
       drawPowerups("drawOver");
     }
@@ -803,7 +896,7 @@
       if ((state.over || state.death) && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
       if (state.over || state.death) return;
       const d = MAP[e.key];
-      if (d) { e.preventDefault(); keys.add(d); }
+      if (d) { e.preventDefault(); state.facing = d; keys.add(d); }
     });
     addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; const d = MAP[e.key]; if (d) keys.delete(d); });
     addEventListener("blur", () => { keys.clear(); shiftHeld = false; pointerSprint = false; });
@@ -814,6 +907,12 @@
       keys.clear();
       if (px < state.x - 8) keys.add("left"); else if (px > state.x + 8) keys.add("right");
       if (py < state.y - 8) keys.add("up"); else if (py > state.y + 8) keys.add("down");
+      if (keys.size) {
+        const horizontalDistance = Math.abs(px - state.x), verticalDistance = Math.abs(py - state.y);
+        state.facing = horizontalDistance >= verticalDistance
+          ? (px < state.x ? "left" : "right")
+          : (py < state.y ? "up" : "down");
+      }
     }
     cv.addEventListener("pointerdown", (e) => {
       if (state.over || state.death || state.paused) return;
@@ -828,8 +927,8 @@
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
-    onGameEvent("enemy:hit", () => gameOver());
-    onGameEvent("blocker:hit", startBlockerDeath);
+    onGameEvent("enemy:hit", () => startDeath("bug"));
+    onGameEvent("blocker:hit", () => startDeath("blocker"));
     onGameEvent("commit:collected", rewardCommit);
     onGameEvent("commit:missed", replaceCommit);
     onGameEvent("secret:collected", rewardSecret);
