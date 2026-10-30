@@ -339,27 +339,38 @@
       }
       s.blockers = s.blockers.filter((b) => b.y < SIZE + 12);
     }
-    function startBlockerDeath() {
+    const DEATH_CAUSES = {
+      bug: { message: "A bug got Mona!" },
+      blocker: { message: "A blocker issue stopped Mona!", tip: "Copilot: Blocker issue! That review really knocked us off course." },
+    };
+    const DEATH_FREEZE = 0.5, DEATH_FREEZE_REDUCED = 0.3, DEATH_FLIP = 0.18, DEATH_POP = 260, DEATH_GRAVITY = 1000;
+    // Every way Mona can die goes through startDeath(cause): the world freezes,
+    // then Mona flips upside down, pops up and falls off the board before game over.
+    // Reduced motion skips the flip/fall and shows game over after a short freeze.
+    function startDeath(cause = "bug") {
       if (state.death || state.over) return;
       updateTempo();
       keys.clear();
       shiftHeld = false;
       pointerSprint = false;
       state.sprinting = false;
-      state.death = { time: 0, y: state.y, angle: 0 };
-      $("tip").textContent = "Copilot: Blocker issue! That review really knocked us off course.";
+      state.death = { cause, time: 0, y: state.y, angle: 0 };
+      const tip = (DEATH_CAUSES[cause] || DEATH_CAUSES.bug).tip;
+      if (tip) $("tip").textContent = tip;
       updateHud();
-      if (reducedMotion.matches) gameOver("A blocker issue stopped Mona!");
     }
     function updateDeath(dt) {
-      const d = state.death;
+      const d = state.death, message = (DEATH_CAUSES[d.cause] || DEATH_CAUSES.bug).message;
       d.time += dt;
-      if (reducedMotion.matches) return gameOver("A blocker issue stopped Mona!");
-      const flip = Math.max(0, Math.min(1, (d.time - 0.3) / 0.18));
-      d.angle = Math.PI * flip;
-      const fall = Math.max(0, d.time - 0.48);
-      d.y = state.y + 80 * fall + 450 * fall * fall;
-      if (d.y > SIZE + MONA_R * 2) gameOver("A blocker issue stopped Mona!");
+      if (reducedMotion.matches) {
+        d.angle = 0; d.y = state.y;
+        if (d.time >= DEATH_FREEZE_REDUCED) gameOver(message);
+        return;
+      }
+      const fall = Math.max(0, d.time - DEATH_FREEZE);
+      d.angle = Math.PI * Math.min(1, fall / DEATH_FLIP);
+      d.y = state.y - DEATH_POP * fall + DEATH_GRAVITY / 2 * fall * fall;
+      if (d.y > SIZE + MONA_R * 2 + 8) gameOver(message);
     }
     function replaceCommit() { state.square = newSquare(); }
     function rewardCommit(detail) {
@@ -612,6 +623,7 @@
       }
     }
     function gameOver(cause = "A bug got Mona!") {
+      if (state.over) return;
       updateTempo();
       state.over = true;
       const isNew = state.score > best;
@@ -800,8 +812,8 @@
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
-    onGameEvent("enemy:hit", () => gameOver());
-    onGameEvent("blocker:hit", startBlockerDeath);
+    onGameEvent("enemy:hit", () => startDeath("bug"));
+    onGameEvent("blocker:hit", () => startDeath("blocker"));
     onGameEvent("commit:collected", rewardCommit);
     onGameEvent("commit:missed", replaceCommit);
     onGameEvent("secret:collected", rewardSecret);
