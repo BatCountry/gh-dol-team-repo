@@ -82,6 +82,63 @@
     ];
     let best = 0, state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
 
+    const hooks = new Map();
+    function onGameEvent(event, handler) {
+      if (typeof handler !== "function") throw new TypeError("Hook handler must be a function");
+      const entry = { handler };
+      if (!hooks.has(event)) hooks.set(event, new Set());
+      const listeners = hooks.get(event);
+      listeners.add(entry);
+      return () => listeners.delete(entry);
+    }
+    function callHooks(event, detail) {
+      for (const { handler } of [...(hooks.get(event) || [])]) {
+        try { handler(detail); }
+        catch (error) { console.error(`Game hook failed: ${event}`, error); }
+      }
+    }
+    // on() runs handlers in registration order and returns an unsubscribe function.
+    // onBeat(4, fn, 1) runs on beats 1, 5, 9...; beat 1 starts after one interval.
+    // Gameplay events: enemy:hit { enemy }, blocker:hit { blocker }, commit:collected / commit:missed { square }.
+    // Secret events: secret:collected / secret:exploded { secret }.
+    window.gameHooks = {
+      on: onGameEvent,
+      onBeat(every, handler, offset = 0) {
+        if (!Number.isInteger(every) || every < 1 || !Number.isInteger(offset) || offset < 0) {
+          throw new RangeError("Beat interval must be a positive integer; offset must be a non-negative integer");
+        }
+        if (typeof handler !== "function") throw new TypeError("Hook handler must be a function");
+        return onGameEvent("beat", (tick) => {
+          if (tick.beat >= offset && (tick.beat - offset) % every === 0) handler(tick);
+        });
+      },
+    };
+
+    const TEMPO_BPM = 120;
+    // Presentation API: read window.tempo in draw() or other scripts.
+    // beat is zero-based; phase rises from 0 to 1, pulse falls from 1 to 0.
+    // This silent clock freezes on pause/death/game-over and resets on restart.
+    const tempo = window.tempo = { bpm: TEMPO_BPM, seconds: 0, beat: 0, phase: 0, pulse: 1 };
+    let tempoLast, dispatchedBeat = 0, dispatchingBeats = false;
+    function updateTempo(now = performance.now()) {
+      if (!state.over && !state.paused && !state.death) tempo.seconds += Math.max(0, now - tempoLast) / 1000;
+      tempoLast = now;
+      const beats = tempo.seconds * TEMPO_BPM / 60;
+      tempo.beat = Math.floor(beats);
+      tempo.phase = beats - tempo.beat;
+      tempo.pulse = 1 - tempo.phase;
+      if (dispatchingBeats) return;
+      const currentState = state;
+      // Deliver crossed beats even after a slow frame; these are not audio scheduling callbacks.
+      dispatchingBeats = true;
+      try {
+        while (dispatchedBeat < tempo.beat && state === currentState && !state.over && !state.paused && !state.death) {
+          const beat = ++dispatchedBeat;
+          callHooks("beat", { beat, bpm: TEMPO_BPM, seconds: beat * 60 / TEMPO_BPM });
+        }
+      } finally { dispatchingBeats = false; }
+    }
+
     function newPullRequest(y) {
       const pick = (items) => items[Math.floor(Math.random() * items.length)];
       const number = 1 + Math.floor(Math.random() * 9999);
@@ -89,6 +146,9 @@
     }
     function reset() {
       state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      Object.assign(tempo, { seconds: 0, beat: 0, phase: 0, pulse: 1 });
+      tempoLast = performance.now();
+      dispatchedBeat = 0;
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
@@ -141,7 +201,7 @@
         });
       }
       s.square.y += gridScroll;
-      if (s.square.y > SIZE + SQ / 2) s.square = newSquare();
+      if (s.square.y > SIZE + SQ / 2) callHooks("commit:missed", { square: s.square });
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
@@ -167,13 +227,11 @@
           const decay = Math.exp(-3 * dt);
           b.vx *= decay; b.vy *= decay;
         }
-        if (d < MONA_R + bt.r - 4) return gameOver();
+        if (d < MONA_R + bt.r - 4) { callHooks("enemy:hit", { enemy: b }); return; }
       }
       updateSecrets(dt);
       if (Math.hypot(s.x - s.square.x, s.y - s.square.y) < MONA_R + SQ / 2) {
-        s.stamina = Math.min(1, s.stamina + STAMINA_REFILL);
-        s.square = newSquare();
-        addScore(1);
+        callHooks("commit:collected", { square: s.square });
       }
     }
     function addScore(n) {
@@ -201,12 +259,11 @@
       const kept = [];
       for (const q of s.secrets) {
         if (Math.hypot(s.x - q.x, s.y - q.y) < MONA_R + SECRET_R) {
-          s.stamina = Math.min(1, s.stamina + STAMINA_REFILL);
-          addScore(SECRET_BONUS);
+          callHooks("secret:collected", { secret: q });
           continue;
         }
         q.age += dt;
-        if (q.age >= SECRET_FUSE) { explodeSecret(q); continue; }
+        if (q.age >= SECRET_FUSE) { callHooks("secret:exploded", { secret: q }); continue; }
         kept.push(q);
       }
       s.secrets = kept;
@@ -242,7 +299,7 @@
         const nearX = Math.max(b.x, Math.min(b.x + BLOCKER_W, s.x));
         const nearY = Math.max(b.y, Math.min(b.y + BLOCKER_H, s.y));
         if (Math.hypot(s.x - nearX, s.y - nearY) < MONA_R - 2) {
-          startBlockerDeath();
+          callHooks("blocker:hit", { blocker: b });
           return;
         }
       }
@@ -250,6 +307,7 @@
     }
     function startBlockerDeath() {
       if (state.death || state.over) return;
+      updateTempo();
       keys.clear();
       shiftHeld = false;
       pointerSprint = false;
@@ -269,7 +327,18 @@
       d.y = state.y + 80 * fall + 450 * fall * fall;
       if (d.y > SIZE + MONA_R * 2) gameOver("A blocker issue stopped Mona!");
     }
+    function replaceCommit() { state.square = newSquare(); }
+    function rewardCommit() {
+      state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
+      replaceCommit();
+      addScore(1);
+    }
+    function rewardSecret() {
+      state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
+      addScore(SECRET_BONUS);
+    }
     function gameOver(cause = "A bug got Mona!") {
+      updateTempo();
       state.over = true;
       best = Math.max(best, state.score);
       $("cause").textContent = cause;
@@ -391,6 +460,7 @@
     function frame(t) {
       const dt = Math.min((t - last) / 1000 || 0, 0.05);
       last = t;
+      updateTempo();
       if (!state.over && !state.paused) {
         if (state.death) updateDeath(dt);
         else step(dt);
@@ -405,6 +475,7 @@
                   ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" };
     function togglePause() {
       if (state.over) return;
+      updateTempo();
       state.paused = !state.paused;
       keys.clear();
       $("paused").classList.toggle("show", state.paused);
@@ -441,6 +512,12 @@
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
+    onGameEvent("enemy:hit", () => gameOver());
+    onGameEvent("blocker:hit", startBlockerDeath);
+    onGameEvent("commit:collected", rewardCommit);
+    onGameEvent("commit:missed", replaceCommit);
+    onGameEvent("secret:collected", rewardSecret);
+    onGameEvent("secret:exploded", ({ secret }) => explodeSecret(secret));
     reset();
     cv.focus();
     requestAnimationFrame((t) => { last = t; frame(t); });
