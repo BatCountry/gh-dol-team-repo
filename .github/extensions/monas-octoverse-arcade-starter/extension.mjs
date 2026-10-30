@@ -7,6 +7,10 @@ import { createCanvas, joinSession } from "@github/copilot-sdk/extension";
 const CANVAS_ID = "monas-octoverse-arcade-starter";
 const TITLE = "Mona's Octoverse Arcade starter";
 const GAME_FILE = join(dirname(fileURLToPath(import.meta.url)), "game.html");
+const AUDIO_FILES = new Map([
+  ["/fm-drums.mjs", join(dirname(GAME_FILE), "fm-drums.mjs")],
+  ["/game-audio.mjs", join(dirname(GAME_FILE), "game-audio.mjs")],
+]);
 const servers = new Map();
 let session;
 
@@ -21,19 +25,20 @@ async function startServer() {
       return;
     }
 
-    if (req.method !== "GET" || (url.pathname !== "/" && url.pathname !== "/index.html")) {
+    const audioFile = AUDIO_FILES.get(url.pathname);
+    if (req.method !== "GET" || (!audioFile && url.pathname !== "/" && url.pathname !== "/index.html")) {
       res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
       res.end("Not found");
       return;
     }
 
     try {
-      const html = await readFile(GAME_FILE, "utf8");
+      const content = await readFile(audioFile || GAME_FILE, "utf8");
       res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
+        "Content-Type": audioFile ? "text/javascript; charset=utf-8" : "text/html; charset=utf-8",
         "Cache-Control": "no-store",
       });
-      res.end(html);
+      res.end(content);
     } catch (error) {
       session.log(`Unable to load the canvas starter: ${error.message}`, { level: "error" });
       res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8" });

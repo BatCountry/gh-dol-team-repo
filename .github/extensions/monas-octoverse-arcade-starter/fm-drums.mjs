@@ -1,0 +1,125 @@
+const FLOOR = 0.0001;
+
+export function createDrumSynth(context) {
+  if (!context || typeof context.createOscillator !== "function") {
+    throw new TypeError("An AudioContext or OfflineAudioContext is required.");
+  }
+  if (context.state === "closed") throw new Error("The audio context is closed.");
+
+  const output = context.createGain();
+  output.gain.value = 0.3;
+  output.connect(context.destination);
+  const voices = new Set();
+  let noiseBuffer, disposed = false;
+
+  function trigger(kind, when = context.currentTime, velocity = 1) {
+    if (disposed) throw new Error("The drum synth has been disposed.");
+    if (context.state === "closed") throw new Error("The audio context is closed.");
+    if (!Number.isFinite(when) || when < 0) {
+      throw new RangeError("when must be a non-negative audio-clock time in seconds.");
+    }
+    if (!Number.isFinite(velocity) || velocity < 0 || velocity > 1) {
+      throw new RangeError("velocity must be between 0 and 1.");
+    }
+    const start = Math.max(when, context.currentTime);
+    if (velocity === 0) return start;
+
+    const duration = kind === "kick" ? 0.48 : kind === "hat" ? 0.09 : 0.22;
+    const end = start + duration;
+    const sources = [], nodes = [];
+    const node = (value) => { nodes.push(value); return value; };
+    const oscillator = (frequency) => {
+      const source = node(context.createOscillator());
+      source.frequency.setValueAtTime(frequency, start);
+      sources.push(source);
+      return source;
+    };
+    const envelope = (peak, decay) => {
+      const gain = node(context.createGain());
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(peak * velocity, start + 0.002);
+      gain.gain.exponentialRampToValueAtTime(FLOOR, start + decay);
+      gain.gain.linearRampToValueAtTime(0, end);
+      return gain;
+    };
+
+    const carrier = oscillator(kind === "kick" ? 150 : kind === "hat" ? 5400 : 185);
+    const modulator = oscillator(kind === "kick" ? 90 : kind === "hat" ? 8340 : 330);
+    const depth = node(context.createGain());
+    depth.gain.setValueAtTime(kind === "kick" ? 95 : kind === "hat" ? 4500 : 2400, start);
+    depth.gain.exponentialRampToValueAtTime(kind === "hat" ? 100 : 1, start + duration * 0.7);
+    modulator.connect(depth);
+    depth.connect(carrier.frequency);
+
+    if (kind === "kick") {
+      carrier.frequency.exponentialRampToValueAtTime(48, start + 0.12);
+      modulator.frequency.exponentialRampToValueAtTime(48, start + 0.1);
+    }
+    const amplitude = envelope(kind === "kick" ? 0.9 : kind === "hat" ? 0.45 : 0.3, duration * 0.85);
+    carrier.connect(amplitude);
+    if (kind === "hat") {
+      const filter = node(context.createBiquadFilter());
+      filter.type = "highpass";
+      filter.frequency.value = Math.min(6500, context.sampleRate * 0.4);
+      filter.Q.value = 0.7;
+      amplitude.connect(filter);
+      filter.connect(output);
+    } else {
+      amplitude.connect(output);
+    }
+
+    if (kind === "snare") {
+      if (!noiseBuffer) {
+        noiseBuffer = context.createBuffer(1, Math.ceil(context.sampleRate * duration), context.sampleRate);
+        const samples = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+      }
+      const noise = node(context.createBufferSource());
+      noise.buffer = noiseBuffer;
+      sources.push(noise);
+      const filter = node(context.createBiquadFilter());
+      filter.type = "highpass";
+      filter.frequency.value = Math.min(1200, context.sampleRate * 0.4);
+      filter.Q.value = 0.7;
+      const noiseAmplitude = envelope(0.6, duration * 0.85);
+      noise.connect(filter);
+      filter.connect(noiseAmplitude);
+      noiseAmplitude.connect(output);
+    }
+
+    const voice = { sources, cleanup };
+    function cleanup() {
+      for (const source of sources) source.onended = null;
+      for (const item of nodes) item.disconnect();
+      voices.delete(voice);
+    }
+    let remaining = sources.length;
+    for (const source of sources) {
+      source.onended = () => { if (--remaining === 0) cleanup(); };
+      source.start(start);
+      source.stop(end);
+    }
+    voices.add(voice);
+    return start;
+  }
+
+  function stop() {
+    for (const voice of voices) {
+      for (const source of voice.sources) source.stop(context.currentTime);
+      voice.cleanup();
+    }
+  }
+
+  return {
+    kick: (when, velocity) => trigger("kick", when, velocity),
+    hat: (when, velocity) => trigger("hat", when, velocity),
+    snare: (when, velocity) => trigger("snare", when, velocity),
+    stop,
+    dispose() {
+      stop();
+      output.disconnect();
+      noiseBuffer = undefined;
+      disposed = true;
+    },
+  };
+}

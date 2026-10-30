@@ -45,6 +45,7 @@
 <body>
   <main>
     <h1>Mona's <span>Octoverse</span> Arcade</h1>
+    <p><button id="sound" type="button" aria-pressed="false">Enable sound</button> <span id="soundStatus" role="status" aria-live="polite"></span></p>
     <div id="hud"><span>Score: <span id="score">0</span></span><span>Speed: <span id="speed">1.0</span>x</span><span>Best: <span id="best">0</span></span></div>
     <div id="stamina"><span>Sprint</span><div id="staminaTrack" role="progressbar" aria-label="Sprint stamina" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><div id="staminaFill"></div></div></div>
     <div id="powerups" role="group" aria-label="Powerups"></div>
@@ -190,8 +191,10 @@
     // Gameplay events: enemy:hit { enemy }, blocker:hit { blocker }, commit:collected / commit:missed { square }.
     // Secret events: secret:collected / secret:exploded { secret }.
     // beat payload: { beat, parity: "odd" | "even", bpm, seconds } at the beat boundary.
+    // transport:changed fires after reset, pause/resume, death, game-over or visibility changes.
     window.gameHooks = {
       on: onGameEvent,
+      get playing() { return !state.over && !state.paused && !state.death && !document.hidden; },
       onBeat(every, handler, offset = 0) {
         if (!Number.isInteger(every) || every < 1 || !Number.isInteger(offset) || offset < 0) {
           throw new RangeError("Beat interval must be a positive integer; offset must be a non-negative integer");
@@ -203,11 +206,11 @@
       },
     };
 
-    const TEMPO_MIN = 60, TEMPO_MAX = 180, SPEED_RAMP_SECONDS = 60;
+    const TEMPO_MIN = 80, TEMPO_MAX = 240, SPEED_RAMP_SECONDS = 60;
     // Presentation API: read window.tempo in draw() or other scripts.
     // beat is zero-based; phase rises from 0 to 1, pulse falls from 1 to 0.
     // This silent clock freezes on pause/death/game-over and resets on restart.
-    // BPM follows the gameplay speed timer from 60 to 180 over 60 seconds, ignoring score.
+    // BPM follows the gameplay speed timer from 80 to 240 over 60 seconds, ignoring score.
     // Beat 0 is the initial even state; emitted beats start at 1 (odd), then 2 (even).
     const tempo = window.tempo = { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 };
     let tempoLast, tempoBeats = 0, dispatchedBeat = 0, dispatchingBeats = false;
@@ -250,12 +253,14 @@
       tempoLast = performance.now();
       tempoBeats = 0;
       dispatchedBeat = 0;
+      bloomPulseAt = -Infinity;
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
       $("cause").textContent = "A bug got Mona!";
       updateHud();
       $("tip").textContent = "Copilot: I'm here to help. Collect green commits and dodge the bugs!";
+      callHooks("transport:changed");
     }
     const speedMult = () => 1 + 3 * Math.min(state.time / SPEED_RAMP_SECONDS, 1) + state.score * 0.03;
     function newSquare() {
@@ -433,6 +438,7 @@
       pointerSprint = false;
       state.sprinting = false;
       state.death = { time: 0, y: state.y, angle: 0 };
+      callHooks("transport:changed");
       $("tip").textContent = "Copilot: Blocker issue! That review really knocked us off course.";
       updateHud();
       if (reducedMotion.matches) gameOver("A blocker issue stopped Mona!");
@@ -700,6 +706,7 @@
     function gameOver(cause = "A bug got Mona!") {
       updateTempo();
       state.over = true;
+      callHooks("transport:changed");
       const isNew = state.score > best;
       if (isNew) {
         best = state.score;
@@ -773,18 +780,116 @@
         lines.forEach((line, i) => ctx.fillText(line, b.x + 8, b.y + 61 + i * 12));
       }
     }
+    function drawCommit(g) {
+      const q = state.square;
+      g.fillStyle = "#3fb950"; g.shadowColor = "#3fb950"; g.shadowBlur = 10;
+      g.fillRect(q.x - SQ / 2, q.y - SQ / 2, SQ, SQ);
+      g.shadowBlur = 0;
+      for (const e of state.extras) {
+        g.globalAlpha = e.ttl < 1.5 && Math.floor(e.ttl * 8) % 2 === 0 ? 0.3 : 1;
+        g.fillStyle = "#56d364"; g.fillRect(e.x - SQ / 2, e.y - SQ / 2, SQ, SQ);
+      }
+      g.globalAlpha = 1;
+    }
+    function drawBugs(g) {
+      for (const b of state.bugs) {
+        const bt = BUG_TYPES[b.type || "normal"], r = bt.r, k = r / BUG_R;
+        g.fillStyle = bt.color;
+        g.beginPath(); g.ellipse(b.x, b.y, r, r * 0.8, 0, 0, 7); g.fill();
+        g.strokeStyle = bt.color; g.lineWidth = 2;
+        for (const a of [-1, 0, 1]) for (const side of [-1, 1]) {
+          g.beginPath(); g.moveTo(b.x, b.y + a * 5 * k); g.lineTo(b.x + side * (r + 5 * k), b.y + a * 9 * k); g.stroke();
+        }
+        if (b.type === "big") {
+          g.strokeStyle = "#ffa198"; g.lineWidth = 2;
+          g.beginPath(); g.ellipse(b.x, b.y, r * 0.6, r * 0.45, 0, 0, 7); g.stroke();
+        }
+        g.fillStyle = "#fff";
+        g.fillRect(b.x - 5 * k, b.y - 4 * k, 3 * k, 3 * k); g.fillRect(b.x + 2 * k, b.y - 4 * k, 3 * k, 3 * k);
+      }
+    }
+    function drawMona(g) {
+      const s = state;
+      g.save();
+      g.translate(s.x, s.death ? s.death.y : s.y);
+      if (s.death) g.rotate(s.death.angle);
+      g.imageSmoothingEnabled = false;
+      const sprite = monaSprites[s.facing][s.walkFrame];
+      g.drawImage(sprite, -20, -20, sprite.width * 2, sprite.height * 2);
+      g.restore();
+    }
+
+    // CRT bloom: bloomed foreground is redrawn to a layer, downsampled (blur), and added back.
+    // Every second even beat (2, 6, 10...) pulses toward PEAK and decays back to BASE.
+    // width = blur radius in px, wash = mix toward white (less saturated, higher value), intensity = additive strength.
+    // Uses downsampling instead of ctx.filter so it also works in WebKit.
+    const BLOOM = {
+      base: { width: 5, wash: 0, intensity: 0.7 },
+      peak: { width: 12, wash: 0.35, intensity: 1.4 },
+      decay: 0.18, // seconds of tempo time for the pulse to fall to ~37%
+      isPulseBeat: (beat) => beat % 4 === 2,
+    };
+    const layer = (n) => { const c = document.createElement("canvas"); c.width = c.height = n; return [c, c.getContext("2d")]; };
+    const [bloomLayer, bctx] = layer(SIZE), [bloomHalf, hctx] = layer(SIZE / 2), [bloomQuarter, qctx] = layer(SIZE / 4), [bloomSmall, sctx] = layer(SIZE / 4);
+    const bloomDrawers = [drawCommit, drawBugs, drawMona];
+    let bloomPulseAt = -Infinity;
+    // Projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer.
+    window.gameBloom = {
+      config: BLOOM,
+      add(drawFn) {
+        if (typeof drawFn !== "function") throw new TypeError("Bloom drawer must be a function");
+        bloomDrawers.push(drawFn);
+        return () => { const i = bloomDrawers.indexOf(drawFn); if (i >= 0) bloomDrawers.splice(i, 1); };
+      },
+      level: () => bloomLevel(),
+    };
+    window.gameHooks.on("beat", ({ beat, seconds }) => {
+      if (BLOOM.isPulseBeat(beat)) bloomPulseAt = seconds;
+    });
+    function bloomLevel() {
+      const since = tempo.seconds - bloomPulseAt;
+      return reducedMotion.matches || !(since >= 0) ? 0 : Math.exp(-since / BLOOM.decay);
+    }
+    function drawBloom() {
+      const k = bloomLevel(), { base, peak } = BLOOM, mix = (key) => base[key] + (peak[key] - base[key]) * k;
+      bctx.clearRect(0, 0, SIZE, SIZE);
+      for (const drawFn of bloomDrawers) {
+        bctx.save();
+        try { drawFn(bctx); } catch (error) { console.error("Bloom drawer failed", error); }
+        bctx.restore();
+      }
+      // Halve repeatedly so downsampling averages instead of aliasing.
+      hctx.clearRect(0, 0, SIZE / 2, SIZE / 2); hctx.drawImage(bloomLayer, 0, 0, SIZE / 2, SIZE / 2);
+      qctx.clearRect(0, 0, SIZE / 4, SIZE / 4); qctx.drawImage(bloomHalf, 0, 0, SIZE / 4, SIZE / 4);
+      const w = Math.max(8, Math.min(SIZE / 4, Math.round(SIZE / mix("width"))));
+      if (bloomSmall.width !== w) bloomSmall.width = bloomSmall.height = w;
+      else sctx.clearRect(0, 0, w, w);
+      sctx.globalCompositeOperation = "source-over";
+      sctx.drawImage(bloomQuarter, 0, 0, w, w);
+      const wash = mix("wash");
+      if (wash > 0.005) {
+        sctx.globalCompositeOperation = "source-atop";
+        sctx.fillStyle = `rgba(255,255,255,${wash.toFixed(3)})`;
+        sctx.fillRect(0, 0, w, w);
+      }
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      // Four half-texel offsets soften bilinear upscaling into a rounder glow.
+      const o = SIZE / w / 2;
+      for (let a = mix("intensity"); a > 0.01; a -= 1) {
+        ctx.globalAlpha = Math.min(1, a) / 4;
+        for (const [dx, dy] of [[-o, -o], [o, -o], [-o, o], [o, o]]) ctx.drawImage(bloomSmall, dx, dy, SIZE, SIZE);
+      }
+      ctx.restore();
+    }
+
     function draw() {
       const s = state;
       drawBackground();
       drawBlockers();
-      ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
-      ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
-      ctx.shadowBlur = 0;
-      for (const q of s.extras) {
-        ctx.globalAlpha = q.ttl < 1.5 && Math.floor(q.ttl * 8) % 2 === 0 ? 0.3 : 1;
-        ctx.fillStyle = "#56d364"; ctx.fillRect(q.x - SQ / 2, q.y - SQ / 2, SQ, SQ);
-      }
-      ctx.globalAlpha = 1;
+      drawCommit(ctx);
       for (const q of s.secrets) {
         const left = Math.max(0, 1 - q.age / SECRET_FUSE), urgent = left < 0.4 && Math.floor(q.age * 8) % 2 === 0;
         ctx.fillStyle = urgent ? "#ffdf5d" : "#d29922";
@@ -802,29 +907,10 @@
       }
       drawPickups();
       drawPowerups("drawUnder");
-      for (const b of s.bugs) {
-        const bt = BUG_TYPES[b.type || "normal"], r = bt.r, k = r / BUG_R;
-        ctx.fillStyle = bt.color;
-        ctx.beginPath(); ctx.ellipse(b.x, b.y, r, r * 0.8, 0, 0, 7); ctx.fill();
-        ctx.strokeStyle = bt.color; ctx.lineWidth = 2;
-        for (const a of [-1, 0, 1]) for (const side of [-1, 1]) {
-          ctx.beginPath(); ctx.moveTo(b.x, b.y + a * 5 * k); ctx.lineTo(b.x + side * (r + 5 * k), b.y + a * 9 * k); ctx.stroke();
-        }
-        if (b.type === "big") {
-          ctx.strokeStyle = "#ffa198"; ctx.lineWidth = 2;
-          ctx.beginPath(); ctx.ellipse(b.x, b.y, r * 0.6, r * 0.45, 0, 0, 7); ctx.stroke();
-        }
-        ctx.fillStyle = "#fff";
-        ctx.fillRect(b.x - 5 * k, b.y - 4 * k, 3 * k, 3 * k); ctx.fillRect(b.x + 2 * k, b.y - 4 * k, 3 * k, 3 * k);
-      }
-      ctx.save();
-      ctx.translate(s.x, s.death ? s.death.y : s.y);
-      if (s.death) ctx.rotate(s.death.angle);
-      ctx.imageSmoothingEnabled = false;
-      const sprite = monaSprites[s.facing][s.walkFrame];
-      ctx.drawImage(sprite, -20, -20, sprite.width * 2, sprite.height * 2);
-      ctx.restore();
+      drawBugs(ctx);
+      drawMona(ctx);
       drawPowerups("drawOver");
+      drawBloom();
     }
     function frame(t) {
       const dt = Math.min((t - last) / 1000 || 0, 0.05);
@@ -846,6 +932,7 @@
       if (state.over) return;
       updateTempo();
       state.paused = !state.paused;
+      callHooks("transport:changed");
       keys.clear();
       $("paused").classList.toggle("show", state.paused);
     }
@@ -860,6 +947,10 @@
     });
     addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; const d = MAP[e.key]; if (d) keys.delete(d); });
     addEventListener("blur", () => { keys.clear(); shiftHeld = false; pointerSprint = false; });
+    document.addEventListener("visibilitychange", () => {
+      updateTempo();
+      callHooks("transport:changed");
+    });
     function pointer(e) {
       if (state.over || state.death || state.paused || (!e.buttons && e.pointerType !== "touch")) return;
       const r = cv.getBoundingClientRect();
@@ -896,6 +987,39 @@
     reset();
     cv.focus();
     requestAnimationFrame((t) => { last = t; frame(t); });
+  </script>
+  <script type="module">
+    import { createGameAudio } from "./game-audio.mjs";
+    const button = document.getElementById("sound");
+    const status = document.getElementById("soundStatus");
+    let enabled = false;
+    function showDisabled() {
+      enabled = false;
+      button.textContent = "Enable sound";
+      button.setAttribute("aria-pressed", "false");
+    }
+    const audio = createGameAudio({
+      hooks: window.gameHooks,
+      tempo: window.tempo,
+      onError(error) {
+        console.error("Game audio failed", error);
+        showDisabled();
+        status.textContent = "Sound unavailable: " + error.message;
+      },
+    });
+    button.addEventListener("click", async () => {
+      status.textContent = "";
+      if (enabled) { audio.disable(); showDisabled(); return; }
+      button.disabled = true;
+      try {
+        enabled = await audio.enable();
+        if (enabled) {
+          button.textContent = "Mute sound";
+          button.setAttribute("aria-pressed", "true");
+        }
+      } finally { button.disabled = false; }
+    });
+    addEventListener("pagehide", () => { audio.disable(); showDisabled(); });
   </script>
 </body>
 </html>
