@@ -56,7 +56,7 @@
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Rare powerup orbs (🛡️ GitHub Advanced Security, ☁️ Cloud Runners) give temporary boosts. Press Enter or Space to restart after game over.</p>
+    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Rare powerup orbs give temporary boosts: 🛡️ GitHub Advanced Security, ☁️ Cloud Runners, 🧲 Dependabot, 🔧 Copilot Autofix, 🔍 Code Review, 📦 Actions Cache, 🔒 Branch Protection, 🚦 Merge Queue, 👻 Codespaces. Press Enter or Space to restart after game over.</p>
   </main>
   <script>
     const TIPS = [
@@ -140,7 +140,7 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       Object.assign(tempo, { seconds: 0, beat: 0, phase: 0, pulse: 1 });
       tempoLast = performance.now();
       dispatchedBeat = 0;
@@ -213,7 +213,7 @@
       for (const b of s.bugs) {
         const bt = BUG_TYPES[b.type || "normal"];
         const d = Math.hypot(s.x - b.x, s.y - b.y) || 1;
-        const bv = (45 + 25 * m) * bt.speed;
+        const bv = (45 + 25 * m) * bt.speed * bugSpeedMult();
         b.x += (s.x - b.x) / d * bv * dt;
         b.y += (s.y - b.y) / d * bv * dt;
         if (b.vx || b.vy) {
@@ -221,11 +221,18 @@
           const decay = Math.exp(-3 * dt);
           b.vx *= decay; b.vy *= decay;
         }
-        if (d < MONA_R + bt.r - 4) { callHooks("enemy:hit", { enemy: b }); return; }
+        if (d < MONA_R + bt.r - 4) {
+          if (absorbHit(b)) { b.dead = true; continue; }
+          callHooks("enemy:hit", { enemy: b }); return;
+        }
       }
+      if (s.bugs.some((b) => b.dead)) s.bugs = s.bugs.filter((b) => !b.dead);
       updateSecrets(dt);
       if (Math.hypot(s.x - s.square.x, s.y - s.square.y) < MONA_R + SQ / 2) {
         callHooks("commit:collected", { square: s.square });
+      }
+      for (const q of s.extras.slice()) {
+        if (Math.hypot(s.x - q.x, s.y - q.y) < MONA_R + SQ / 2) callHooks("commit:collected", { square: q });
       }
     }
     function addScore(n) {
@@ -270,10 +277,17 @@
       }
     }
     function replaceCommit() { state.square = newSquare(); }
-    function rewardCommit() {
+    function rewardCommit(detail) {
+      const q = detail && detail.square;
       state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
-      replaceCommit();
-      addScore(1);
+      if (q && q !== state.square) state.extras = state.extras.filter((e) => e !== q);
+      else replaceCommit();
+      let pts = 1;
+      for (const p of state.powerups) {
+        const def = POWERUPS[p.id];
+        if (def.onCommit) pts = def.onCommit(state, p, pts);
+      }
+      addScore(pts);
     }
     function rewardSecret() {
       state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
@@ -286,7 +300,7 @@
     // onActivate(s, p), onTick(s, dt, p), onExpire(s, p), drawUnder(ctx, s, p), drawOver(ctx, s, p).
     // p is the active instance { id, remaining, data }.
     const POWERUP_SPAWN_MIN = 20, POWERUP_SPAWN_MAX = 40, PICKUP_LIFETIME = 8, PICKUP_R = 14;
-    const GHAS_RADIUS = 90, RUNNERS_SPEED = 1.15;
+    const GHAS_RADIUS = 90, RUNNERS_SPEED = 1.15, MAGNET_RADIUS = 150, AUTOFIX_RADIUS = 130, MERGE_CHARGES = 3, MERGE_BONUS = 2;
     const POWERUPS = {
       ghas: {
         name: "GitHub Advanced Security", icon: "🛡️", color: "#58a6ff", duration: 8, weight: 1,
@@ -331,8 +345,101 @@
           }
         },
       },
+      dependabot: {
+        name: "Dependabot", icon: "🧲", color: "#39c5cf", duration: 8, weight: 1,
+        onTick(s, dt) {
+          for (const q of [s.square, ...s.extras]) {
+            const d = Math.hypot(s.x - q.x, s.y - q.y);
+            if (d < MAGNET_RADIUS && d > 1) { const k = Math.min(d, 320 * dt) / d; q.x += (s.x - q.x) * k; q.y += (s.y - q.y) * k; }
+          }
+        },
+        drawUnder(ctx, s, p) {
+          ctx.strokeStyle = "rgba(57,197,207," + 0.25 * Math.min(1, p.remaining / 1.5) + ")"; ctx.lineWidth = 2;
+          ctx.setLineDash([6, 6]); ctx.beginPath(); ctx.arc(s.x, s.y, MAGNET_RADIUS, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+        },
+      },
+      autofix: {
+        name: "Copilot Autofix", icon: "🔧", color: "#7ee787", duration: 6, weight: 1,
+        onTick(s) {
+          const kept = [];
+          for (const b of s.bugs) {
+            if (Math.hypot(b.x - s.x, b.y - s.y) < AUTOFIX_RADIUS && s.extras.length < 30) {
+              s.extras.push({ x: b.x, y: b.y, ttl: 6 });
+              s.blasts.push({ x: b.x, y: b.y, t: 0.3, color: "126,231,135", scale: 0.4 });
+            } else kept.push(b);
+          }
+          s.bugs = kept;
+        },
+        drawUnder(ctx, s, p) {
+          ctx.strokeStyle = "rgba(126,231,135," + 0.3 * Math.min(1, p.remaining / 1.5) + ")"; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(s.x, s.y, AUTOFIX_RADIUS, 0, 7); ctx.stroke();
+        },
+      },
+      codereview: {
+        name: "Code Review", icon: "🔍", color: "#b1bac4", duration: 7, weight: 1, bugSpeedMult: 0.4,
+      },
+      cache: {
+        name: "Actions Cache", icon: "📦", color: "#f778ba", duration: 8, weight: 1,
+        onCommit: (s, p, pts) => pts * 2,
+      },
+      protection: {
+        name: "Branch Protection", icon: "🔒", color: "#e3b341", duration: 20, weight: 1,
+        onHit(s, p, bug) {
+          s.blasts.push({ x: bug.x, y: bug.y, t: 0.1, color: "227,179,65", scale: 0.6 });
+          p.remaining = 0;
+          return true;
+        },
+        drawOver(ctx, s, p) {
+          const blink = p.remaining < 3 && Math.floor(p.remaining * 6) % 2 === 0;
+          ctx.strokeStyle = blink ? "rgba(227,179,65,0.3)" : "rgba(227,179,65,0.9)"; ctx.lineWidth = 3;
+          ctx.beginPath(); ctx.arc(s.x, s.y, MONA_R + 7, 0, 7); ctx.stroke();
+        },
+      },
+      mergequeue: {
+        name: "Merge Queue", icon: "🚦", color: "#ffa657", duration: 12, weight: 1,
+        onActivate(s, p) { p.data.left = MERGE_CHARGES; },
+        onCommit(s, p, pts) {
+          if (p.data.left <= 0) return pts;
+          if (--p.data.left <= 0) p.remaining = 0;
+          return pts + MERGE_BONUS;
+        },
+      },
+      codespaces: {
+        name: "Codespaces", icon: "👻", color: "#e6edf3", duration: 10, weight: 1,
+        onActivate(s, p) { p.data.g = { x: Math.max(MONA_R, s.x - 40), y: s.y }; },
+        onTick(s, dt, p) {
+          const g = p.data.g;
+          let target = null, best = Infinity;
+          for (const q of [s.square, ...s.extras]) {
+            const d = Math.hypot(q.x - g.x, q.y - g.y);
+            if (d < best) { best = d; target = q; }
+          }
+          if (!target) return;
+          if (best < MONA_R + SQ / 2) { callHooks("commit:collected", { square: target }); return; }
+          const k = Math.min(best, 240 * dt) / best;
+          g.x += (target.x - g.x) * k; g.y += (target.y - g.y) * k;
+        },
+        drawOver(ctx, s, p) {
+          const g = p.data.g;
+          ctx.globalAlpha = 0.55; ctx.fillStyle = "#e6edf3";
+          ctx.beginPath(); ctx.arc(g.x, g.y, MONA_R, Math.PI, 0); ctx.lineTo(g.x + MONA_R, g.y + MONA_R);
+          ctx.lineTo(g.x - MONA_R, g.y + MONA_R); ctx.closePath(); ctx.fill();
+          ctx.fillStyle = "#0d1117"; ctx.fillRect(g.x - 7, g.y - 4, 4, 4); ctx.fillRect(g.x + 3, g.y - 4, 4, 4);
+          ctx.globalAlpha = 1;
+        },
+      },
     };
     window.gamePowerups = { registry: POWERUPS, activate: (id) => activatePowerup(id) };
+    function bugSpeedMult() {
+      return state.powerups.reduce((n, p) => n * (POWERUPS[p.id].bugSpeedMult || 1), 1);
+    }
+    function absorbHit(bug) {
+      for (const p of state.powerups) {
+        const def = POWERUPS[p.id];
+        if (def.onHit && def.onHit(state, p, bug)) return true;
+      }
+      return false;
+    }
     function pickPowerupId() {
       const ids = Object.keys(POWERUPS), total = ids.reduce((n, id) => n + (POWERUPS[id].weight ?? 1), 0);
       let roll = Math.random() * total;
@@ -354,6 +461,8 @@
     }
     function tickPowerups(dt) {
       const s = state;
+      for (const q of s.extras) q.ttl -= dt;
+      s.extras = s.extras.filter((q) => q.ttl > 0);
       s.pickupTimer -= dt;
       if (s.pickupTimer <= 0) {
         s.pickupTimer = POWERUP_SPAWN_MIN + Math.random() * (POWERUP_SPAWN_MAX - POWERUP_SPAWN_MIN);
@@ -462,6 +571,11 @@
       ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
       ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
       ctx.shadowBlur = 0;
+      for (const q of s.extras) {
+        ctx.globalAlpha = q.ttl < 1.5 && Math.floor(q.ttl * 8) % 2 === 0 ? 0.3 : 1;
+        ctx.fillStyle = "#56d364"; ctx.fillRect(q.x - SQ / 2, q.y - SQ / 2, SQ, SQ);
+      }
+      ctx.globalAlpha = 1;
       for (const q of s.secrets) {
         const left = Math.max(0, 1 - q.age / SECRET_FUSE), urgent = left < 0.4 && Math.floor(q.age * 8) % 2 === 0;
         ctx.fillStyle = urgent ? "#ffdf5d" : "#d29922";
