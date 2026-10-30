@@ -263,27 +263,33 @@
     // Bullets fire on odd tempo beats at the nearest harmful target (bugs and blocker issues).
     // Webs pull in beneficial pickups (commits, secret keys, powerup pickups) within WEB_RANGE.
     const BULLET_SPEED = 420, BULLET_R = 4, MONA_WIDTH = MONA_R * 2, WEB_RANGE = 6 * MONA_WIDTH, WEB_PULL = 260;
-    function nearestThreat() {
+    function nearestThreat(o = state) {
       const s = state;
       let target = null, best = Infinity;
       for (const b of s.bugs) {
-        const d = Math.hypot(b.x - s.x, b.y - s.y);
+        const d = Math.hypot(b.x - o.x, b.y - o.y);
         if (d < best) { best = d; target = { x: b.x, y: b.y }; }
       }
       for (const k of s.blockers) {
-        const nx = Math.max(k.x, Math.min(k.x + BLOCKER_W, s.x)), ny = Math.max(k.y, Math.min(k.y + BLOCKER_H, s.y));
-        const d = Math.hypot(nx - s.x, ny - s.y);
+        const nx = Math.max(k.x, Math.min(k.x + BLOCKER_W, o.x)), ny = Math.max(k.y, Math.min(k.y + BLOCKER_H, o.y));
+        const d = Math.hypot(nx - o.x, ny - o.y);
         if (d < best) { best = d; target = { x: k.x + BLOCKER_W / 2, y: k.y + BLOCKER_H / 2 }; }
       }
       return target;
     }
+    function shootFrom(o, copilot) {
+      const t = nearestThreat(o);
+      if (!t) return false;
+      const d = Math.hypot(t.x - o.x, t.y - o.y) || 1;
+      state.bullets.push({ x: o.x, y: o.y, vx: (t.x - o.x) / d * BULLET_SPEED, vy: (t.y - o.y) / d * BULLET_SPEED, copilot });
+      return true;
+    }
+    // Each Copilot follower fires alongside every shot Mona takes.
     function fireBullet() {
       const s = state;
       if (s.over || s.death || s.paused) return;
-      const t = nearestThreat();
-      if (!t) return;
-      const d = Math.hypot(t.x - s.x, t.y - s.y) || 1;
-      s.bullets.push({ x: s.x, y: s.y, vx: (t.x - s.x) / d * BULLET_SPEED, vy: (t.y - s.y) / d * BULLET_SPEED });
+      if (!shootFrom(s, false)) return;
+      for (const f of s.followers) shootFrom(f, true);
     }
     function updateBullets(dt) {
       const s = state, kept = [];
@@ -339,8 +345,12 @@
       }
     }
     function drawBullets() {
-      ctx.fillStyle = "#9be9ff"; ctx.shadowColor = "#58a6ff"; ctx.shadowBlur = 8;
-      for (const u of state.bullets) { ctx.beginPath(); ctx.arc(u.x, u.y, BULLET_R, 0, 7); ctx.fill(); }
+      ctx.shadowBlur = 8;
+      for (const u of state.bullets) {
+        ctx.fillStyle = u.copilot ? "#7ee787" : "#9be9ff"; ctx.shadowColor = u.copilot ? "#3fb950" : "#58a6ff";
+        ctx.beginPath(); ctx.arc(u.x, u.y, BULLET_R, 0, 7); ctx.fill();
+        if (u.copilot) { ctx.fillStyle = "#0d1117"; ctx.beginPath(); ctx.arc(u.x, u.y, BULLET_R * 0.4, 0, 7); ctx.fill(); }
+      }
       ctx.shadowBlur = 0;
     }
     function newSquare() {
