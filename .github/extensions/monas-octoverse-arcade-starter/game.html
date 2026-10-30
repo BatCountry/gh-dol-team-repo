@@ -266,29 +266,14 @@
       callHooks("transport:changed");
     }
     const speedMult = () => 1 + 3 * Math.min(state.time / SPEED_RAMP_SECONDS, 1) + state.score * 0.03;
-    // Bullets fire on odd tempo beats at the nearest harmful target (bugs and blocker issues).
+    // Bullets fire on odd tempo beats in Mona's movement direction (last movement or facing when stationary); blocker issues absorb bullets.
     // Webs are the Dependabot magnet's grappling hooks: only while it is active, they pull beneficial
     // pickups (commits, secret keys, powerup orbs, Copilot heads) within MAGNET_RADIUS at MAGNET_PULL.
     const BULLET_SPEED = 420, BULLET_R = 4, MONA_WIDTH = MONA_R * 2, MAGNET_RADIUS = 6 * MONA_WIDTH, MAGNET_PULL = 320;
-    function nearestThreat(o = state) {
-      const s = state;
-      let target = null, best = Infinity;
-      for (const b of s.bugs) {
-        const d = Math.hypot(b.x - o.x, b.y - o.y);
-        if (d < best) { best = d; target = { x: b.x, y: b.y }; }
-      }
-      for (const k of s.blockers) {
-        const nx = Math.max(k.x, Math.min(k.x + BLOCKER_W, o.x)), ny = Math.max(k.y, Math.min(k.y + BLOCKER_H, o.y));
-        const d = Math.hypot(nx - o.x, ny - o.y);
-        if (d < best) { best = d; target = { x: k.x + BLOCKER_W / 2, y: k.y + BLOCKER_H / 2 }; }
-      }
-      return target;
-    }
+    const FACING_VECTORS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
     function shootFrom(o, copilot) {
-      const t = nearestThreat(o);
-      if (!t) return false;
-      const d = Math.hypot(t.x - o.x, t.y - o.y) || 1;
-      state.bullets.push({ x: o.x, y: o.y, vx: (t.x - o.x) / d * BULLET_SPEED, vy: (t.y - o.y) / d * BULLET_SPEED, copilot });
+      const [ax, ay] = state.aim || FACING_VECTORS[state.facing] || [0, 1];
+      state.bullets.push({ x: o.x, y: o.y, vx: ax * BULLET_SPEED, vy: ay * BULLET_SPEED, copilot });
       return true;
     }
     // Each Copilot follower fires alongside every shot Mona takes.
@@ -310,11 +295,7 @@
           continue;
         }
         const blocker = s.blockers.find((k) => u.x > k.x - BULLET_R && u.x < k.x + BLOCKER_W + BULLET_R && u.y > k.y - BULLET_R && u.y < k.y + BLOCKER_H + BULLET_R);
-        if (blocker) {
-          s.blockers = s.blockers.filter((k) => k !== blocker);
-          s.blasts.push({ x: blocker.x + BLOCKER_W / 2, y: blocker.y + BLOCKER_H / 2, t: 0.2, color: "88,166,255", scale: 0.8 });
-          continue;
-        }
+        if (blocker) continue; // blockers are indestructible; bullets are absorbed
         kept.push(u);
       }
       s.bullets = kept;
@@ -416,6 +397,7 @@
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
       tickPowerups(dt);
       const moving = dx !== 0 || dy !== 0;
+      if (moving) s.aim = [dx, dy];
       if (moving && !reducedMotion.matches) {
         s.walkBeat += dt;
         if (s.walkBeat >= WALK_BEAT) {
@@ -1057,14 +1039,18 @@
     const layer = (n) => { const c = document.createElement("canvas"); c.width = c.height = n; return [c, c.getContext("2d")]; };
     const [bloomLayer, bctx] = layer(SIZE), [bloomHalf, hctx] = layer(SIZE / 2), [bloomQuarter, qctx] = layer(SIZE / 4), [bloomSmall, sctx] = layer(SIZE / 4);
     const bloomDrawers = [drawCommit, drawBugs, drawProjectiles, drawBullets, drawMona];
+    // Steady drawers keep the base glow but skip the beat pulse (Mona was blown out by it).
+    const steadyBloom = new Set([drawMona]);
     let bloomPulseAt = -Infinity;
-    // Additional projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer.
+    // Additional projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer;
+    // pass { pulse: false } to keep a drawer at the base glow.
     window.gameBloom = {
       config: BLOOM,
-      add(drawFn) {
+      add(drawFn, { pulse = true } = {}) {
         if (typeof drawFn !== "function") throw new TypeError("Bloom drawer must be a function");
         bloomDrawers.push(drawFn);
-        return () => { const i = bloomDrawers.indexOf(drawFn); if (i >= 0) bloomDrawers.splice(i, 1); };
+        if (!pulse) steadyBloom.add(drawFn);
+        return () => { const i = bloomDrawers.indexOf(drawFn); if (i >= 0) bloomDrawers.splice(i, 1); steadyBloom.delete(drawFn); };
       },
       level: () => bloomLevel(),
     };
@@ -1074,9 +1060,17 @@
       return reducedMotion.matches || !(since >= 0) ? 0 : Math.exp(-since / BLOOM.decay);
     }
     function drawBloom() {
-      const k = bloomLevel(), { base, peak } = BLOOM, mix = (key) => base[key] + (peak[key] - base[key]) * k;
+      const k = bloomLevel();
+      // Off-pulse everything shares one pass; during a pulse steady drawers get their own base-level pass.
+      if (k < 0.005) return bloomPass(bloomDrawers, 0);
+      bloomPass(bloomDrawers.filter((f) => !steadyBloom.has(f)), k);
+      bloomPass(bloomDrawers.filter((f) => steadyBloom.has(f)), 0);
+    }
+    function bloomPass(drawers, k) {
+      if (!drawers.length) return;
+      const { base, peak } = BLOOM, mix = (key) => base[key] + (peak[key] - base[key]) * k;
       bctx.clearRect(0, 0, SIZE, SIZE);
-      for (const drawFn of bloomDrawers) {
+      for (const drawFn of drawers) {
         bctx.save();
         try { drawFn(bctx); } catch (error) { console.error("Bloom drawer failed", error); }
         bctx.restore();
