@@ -59,10 +59,15 @@
     const cv = document.getElementById("game"), ctx = cv.getContext("2d");
     const $ = (id) => document.getElementById(id);
     const keys = new Set();
+    const PARALLAX_SPEEDS = [12, 26, 54];
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+    const sky = ctx.createLinearGradient(0, 0, 0, SIZE);
+    sky.addColorStop(0, "#0b1326");
+    sky.addColorStop(1, "#0d1117");
     let best = 0, state, last;
 
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, tipN: 0 };
+      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, tipN: 0, backgroundOffsets: [0, 0, 0] };
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
@@ -90,6 +95,9 @@
     function step(dt) {
       const s = state, m = speedMult();
       s.time += dt;
+      if (!reducedMotion.matches) {
+        s.backgroundOffsets = s.backgroundOffsets.map((offset, i) => (offset + PARALLAX_SPEEDS[i] * m * dt) % SIZE);
+      }
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
@@ -123,13 +131,36 @@
       $("over").classList.add("show");
       $("restart").focus();
     }
+    function drawBackground() {
+      const [stars, clouds, streaks] = state.backgroundOffsets;
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, SIZE, SIZE);
+      ctx.fillStyle = "#526882";
+      for (let i = 0; i < 48; i++) {
+        const x = (i * 137 + 19) % SIZE, y = ((i * 83 + 11) % SIZE + stars) % SIZE;
+        ctx.fillRect(x, y, i % 4 === 0 ? 2 : 1, 2);
+      }
+      ctx.fillStyle = "rgba(88, 125, 185, 0.06)";
+      for (let i = 0; i < 6; i++) {
+        const x = i % 2 === 0 ? 15 : SIZE - 15;
+        const y = ((i * 97 + 35) % SIZE + clouds) % SIZE;
+        // Repeat across the tile boundary so clouds enter and leave smoothly.
+        for (const tile of [-SIZE, 0, SIZE]) {
+          ctx.beginPath(); ctx.ellipse(x, y + tile, 100, 34, -0.25, 0, Math.PI * 2); ctx.fill();
+        }
+      }
+      ctx.strokeStyle = "rgba(121, 177, 218, 0.24)";
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 12; i++) {
+        const x = (i * 113 + 43) % SIZE, y = ((i * 157 + 23) % SIZE + streaks) % SIZE;
+        for (const tile of [-SIZE, 0]) {
+          ctx.beginPath(); ctx.moveTo(x, y + tile); ctx.lineTo(x, y + tile + 14); ctx.stroke();
+        }
+      }
+    }
     function draw() {
       const s = state;
-      ctx.clearRect(0, 0, SIZE, SIZE);
-      ctx.strokeStyle = "#161b22"; ctx.lineWidth = 1;
-      for (let i = 0; i <= SIZE; i += 30) {
-        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, SIZE); ctx.moveTo(0, i); ctx.lineTo(SIZE, i); ctx.stroke();
-      }
+      drawBackground();
       ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
       ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
       ctx.shadowBlur = 0;
