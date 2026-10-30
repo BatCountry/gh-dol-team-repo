@@ -6,37 +6,194 @@
   <title>Mona's Octoverse Arcade starter</title>
   <link rel="icon" href="data:,">
   <style>
-    :root {
-      color-scheme: dark;
-      font: 16px/1.5 system-ui, sans-serif;
-      background: #0d1117;
-      color: #e6edf3;
-    }
-
+    :root { color-scheme: dark; font: 16px/1.5 system-ui, sans-serif; background: #0d1117; color: #e6edf3; }
     * { box-sizing: border-box; }
-    body { display: grid; min-height: 100vh; margin: 0; place-items: center; padding: 1.5rem; }
-    main { width: min(100%, 34rem); padding: 2rem; background: #161b22; border: 1px solid #30363d; border-radius: 1rem; }
-    .eyebrow { color: #3fb950; font-size: 0.8rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
-    h1 { margin: 0.5rem 0; font-size: clamp(1.7rem, 7vw, 2.5rem); line-height: 1.1; }
-    p { color: #c9d1d9; }
-    button { padding: 0.7rem 1rem; color: #fff; font: inherit; font-weight: 700; background: #238636; border: 0; border-radius: 0.5rem; cursor: pointer; }
+    body { display: grid; min-height: 100vh; margin: 0; place-items: center; padding: 1rem; }
+    main { width: min(100%, 34rem); }
+    h1 { margin: 0 0 .5rem; font-size: 1.4rem; }
+    h1 span { color: #3fb950; }
+    #hud { display: flex; justify-content: space-between; font-weight: 700; margin-bottom: .5rem; }
+    #stage { position: relative; }
+    canvas { display: block; width: 100%; aspect-ratio: 1; background: #0d1117; border: 2px solid #30363d; border-radius: .75rem; touch-action: none; }
+    #over { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: .5rem; background: rgba(13,17,23,.88); border-radius: .75rem; text-align: center; padding: 1rem; }
+    #over.show, #paused.show { display: flex; }
+    #paused { position: absolute; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; gap: .25rem; background: rgba(13,17,23,.8); border-radius: .75rem; text-align: center; }
+    #paused h2 { margin: 0; font-size: 2rem; color: #58a6ff; }
+    #paused p { margin: 0 0 .5rem; color: #c9d1d9; }
+    #over h2 { margin: 0; font-size: 2rem; color: #f85149; }
+    button { padding: .7rem 1.2rem; color: #fff; font: inherit; font-weight: 700; background: #238636; border: 0; border-radius: .5rem; cursor: pointer; }
     button:hover { background: #1a7f37; }
     button:focus-visible { outline: 3px solid #58a6ff; outline-offset: 3px; }
-    #status { min-height: 1.5em; margin-bottom: 0; }
+    #sidekick { display: flex; gap: .6rem; align-items: center; margin-top: .6rem; min-height: 3.2rem; padding: .5rem .8rem; background: #161b22; border: 1px solid #30363d; border-radius: .75rem; }
+    #sidekick .icon { font-size: 1.5rem; }
+    #tip { margin: 0; color: #c9d1d9; }
+    .help { color: #8b949e; font-size: .85rem; margin: .4rem 0 0; }
   </style>
 </head>
 <body>
   <main>
-    <p class="eyebrow">Canvas starter</p>
-    <h1>Mona's Octoverse Arcade</h1>
-    <p>Your canvas is running. This welcome screen is the starting point—not the finished game.</p>
-    <button id="ready" type="button">Check the canvas</button>
-    <p id="status" role="status" aria-live="polite"></p>
+    <h1>Mona's <span>Octoverse</span> Arcade</h1>
+    <div id="hud"><span>Score: <span id="score">0</span></span><span>Speed: <span id="speed">1.0</span>x</span><span>Best: <span id="best">0</span></span></div>
+    <div id="stage">
+      <canvas id="game" width="480" height="480" tabindex="0" aria-label="Mona's Octoverse Arcade game"></canvas>
+      <div id="over" role="alertdialog" aria-labelledby="overTitle">
+        <h2 id="overTitle">Game over</h2>
+        <p>A bug got Mona! Final score: <strong id="final">0</strong></p>
+        <button id="restart" type="button">Restart</button>
+      </div>
+      <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
+    </div>
+    <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
+    <p class="help">Move with arrow keys or WASD (or press/drag on the board). Press Enter or Space to restart.</p>
   </main>
   <script>
-    document.querySelector("#ready").addEventListener("click", () => {
-      document.querySelector("#status").textContent = "Canvas is interactive. Start building the game in game.html!";
+    const TIPS = [
+      "Nice commit! Small, frequent commits make bugs easier to find.",
+      "You're on a roll! Write tests before the bugs write you.",
+      "Great dodge! Reading the diff carefully pays off.",
+      "Keep it up! Rubber-duck your problems; I'm a decent duck.",
+      "Smooth moves! Ship small, ship often.",
+      "Awesome! Every green square is progress. Keep merging!",
+    ];
+    const SIZE = 480, MONA_R = 16, SQ = 18, BUG_R = 12;
+    const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+    const $ = (id) => document.getElementById(id);
+    const keys = new Set();
+    let best = 0, state, last;
+
+    function reset() {
+      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, tipN: 0 };
+      state.square = newSquare();
+      $("over").classList.remove("show");
+      $("paused").classList.remove("show");
+      updateHud();
+      $("tip").textContent = "Copilot: I'm here to help. Collect green commits and dodge the bugs!";
+    }
+    const speedMult = () => 1 + Math.min(state.time / 20, 3) + state.score * 0.03;
+    function newSquare() {
+      for (let i = 0; i < 50; i++) {
+        const q = { x: 30 + Math.random() * (SIZE - 60), y: 30 + Math.random() * (SIZE - 60) };
+        if (Math.hypot(q.x - state.x, q.y - state.y) > 80) return q;
+      }
+      return { x: 40, y: 40 };
+    }
+    function spawnBug() {
+      const edge = Math.floor(Math.random() * 4), t = Math.random() * SIZE;
+      const p = [[t, -BUG_R], [SIZE + BUG_R, t], [t, SIZE + BUG_R], [-BUG_R, t]][edge];
+      state.bugs.push({ x: p[0], y: p[1] });
+    }
+    function updateHud() {
+      $("score").textContent = state.score;
+      $("speed").textContent = speedMult().toFixed(1);
+      $("best").textContent = best;
+    }
+    function step(dt) {
+      const s = state, m = speedMult();
+      s.time += dt;
+      let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
+      let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
+      if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
+      const v = 190 + Math.min(m, 4) * 10;
+      s.x = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.x + dx * v * dt));
+      s.y = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.y + dy * v * dt));
+
+      s.spawn -= dt;
+      if (s.spawn <= 0) { spawnBug(); s.spawn = Math.max(0.8, 3 - s.time / 25); }
+      for (const b of s.bugs) {
+        const d = Math.hypot(s.x - b.x, s.y - b.y) || 1;
+        const bv = 45 + 25 * m;
+        b.x += (s.x - b.x) / d * bv * dt;
+        b.y += (s.y - b.y) / d * bv * dt;
+        if (d < MONA_R + BUG_R - 4) return gameOver();
+      }
+      if (Math.hypot(s.x - s.square.x, s.y - s.square.y) < MONA_R + SQ / 2) {
+        s.score++;
+        s.square = newSquare();
+        if (s.score % 10 === 0) {
+          $("tip").textContent = "Copilot: " + TIPS[s.tipN++ % TIPS.length] + " (" + s.score + " points!)";
+        }
+        updateHud();
+      }
+    }
+    function gameOver() {
+      state.over = true;
+      best = Math.max(best, state.score);
+      $("final").textContent = state.score;
+      $("best").textContent = best;
+      $("over").classList.add("show");
+      $("restart").focus();
+    }
+    function draw() {
+      const s = state;
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      ctx.strokeStyle = "#161b22"; ctx.lineWidth = 1;
+      for (let i = 0; i <= SIZE; i += 30) {
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, SIZE); ctx.moveTo(0, i); ctx.lineTo(SIZE, i); ctx.stroke();
+      }
+      ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
+      ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
+      ctx.shadowBlur = 0;
+      for (const b of s.bugs) {
+        ctx.fillStyle = "#f85149";
+        ctx.beginPath(); ctx.ellipse(b.x, b.y, BUG_R, BUG_R * 0.8, 0, 0, 7); ctx.fill();
+        ctx.strokeStyle = "#f85149"; ctx.lineWidth = 2;
+        for (const a of [-1, 0, 1]) for (const side of [-1, 1]) {
+          ctx.beginPath(); ctx.moveTo(b.x, b.y + a * 5); ctx.lineTo(b.x + side * (BUG_R + 5), b.y + a * 9); ctx.stroke();
+        }
+        ctx.fillStyle = "#fff"; ctx.fillRect(b.x - 5, b.y - 4, 3, 3); ctx.fillRect(b.x + 2, b.y - 4, 3, 3);
+      }
+      const x = s.x, y = s.y;
+      ctx.fillStyle = "#e6edf3";
+      ctx.beginPath(); ctx.moveTo(x - 14, y - 4); ctx.lineTo(x - 14, y - 18); ctx.lineTo(x - 5, y - 11); ctx.lineTo(x + 5, y - 11); ctx.lineTo(x + 14, y - 18); ctx.lineTo(x + 14, y - 4); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y, MONA_R - 2, 0, 7); ctx.fill();
+      for (let i = -2; i <= 2; i++) { ctx.beginPath(); ctx.arc(x + i * 6, y + 14, 4, 0, 7); ctx.fill(); }
+      ctx.fillStyle = "#0d1117";
+      ctx.beginPath(); ctx.arc(x - 5, y - 2, 2.5, 0, 7); ctx.arc(x + 5, y - 2, 2.5, 0, 7); ctx.fill();
+      ctx.fillRect(x - 3, y + 3, 6, 2);
+    }
+    function frame(t) {
+      const dt = Math.min((t - last) / 1000 || 0, 0.05);
+      last = t;
+      if (!state.over && !state.paused) { step(dt); if (!state.over) updateHud(); }
+      draw();
+      requestAnimationFrame(frame);
+    }
+    function restart() { reset(); keys.clear(); cv.focus(); }
+
+    const MAP = { ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
+                  ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" };
+    function togglePause() {
+      if (state.over) return;
+      state.paused = !state.paused;
+      keys.clear();
+      $("paused").classList.toggle("show", state.paused);
+    }
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) togglePause(); return; }
+      if (state.paused) return;
+      if (state.over && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
+      const d = MAP[e.key];
+      if (d) { e.preventDefault(); keys.add(d); }
     });
+    addEventListener("keyup", (e) => { const d = MAP[e.key]; if (d) keys.delete(d); });
+    addEventListener("blur", () => keys.clear());
+    function pointer(e) {
+      if (state.paused || (!e.buttons && e.pointerType !== "touch")) return;
+      const r = cv.getBoundingClientRect();
+      const px = (e.clientX - r.left) * SIZE / r.width, py = (e.clientY - r.top) * SIZE / r.height;
+      keys.clear();
+      if (px < state.x - 8) keys.add("left"); else if (px > state.x + 8) keys.add("right");
+      if (py < state.y - 8) keys.add("up"); else if (py > state.y + 8) keys.add("down");
+    }
+    cv.addEventListener("pointerdown", pointer);
+    cv.addEventListener("pointermove", pointer);
+    addEventListener("pointerup", () => keys.clear());
+    $("restart").addEventListener("click", restart);
+    $("restartPaused").addEventListener("click", restart);
+
+    reset();
+    cv.focus();
+    requestAnimationFrame((t) => { last = t; frame(t); });
   </script>
 </body>
 </html>
