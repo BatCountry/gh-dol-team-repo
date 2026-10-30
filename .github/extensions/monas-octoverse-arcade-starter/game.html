@@ -71,12 +71,43 @@
     const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
     let best = 0, state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
 
+    const hooks = new Map();
+    function onGameEvent(event, handler) {
+      if (typeof handler !== "function") throw new TypeError("Hook handler must be a function");
+      const entry = { handler };
+      if (!hooks.has(event)) hooks.set(event, new Set());
+      const listeners = hooks.get(event);
+      listeners.add(entry);
+      return () => listeners.delete(entry);
+    }
+    function callHooks(event, detail) {
+      for (const { handler } of [...(hooks.get(event) || [])]) {
+        try { handler(detail); }
+        catch (error) { console.error(`Game hook failed: ${event}`, error); }
+      }
+    }
+    // on() runs handlers in registration order and returns an unsubscribe function.
+    // onBeat(4, fn, 1) runs on beats 1, 5, 9...; beat 1 starts after one interval.
+    // Gameplay events: enemy:hit { enemy }, commit:collected / commit:missed { square }.
+    window.gameHooks = {
+      on: onGameEvent,
+      onBeat(every, handler, offset = 0) {
+        if (!Number.isInteger(every) || every < 1 || !Number.isInteger(offset) || offset < 0) {
+          throw new RangeError("Beat interval must be a positive integer; offset must be a non-negative integer");
+        }
+        if (typeof handler !== "function") throw new TypeError("Hook handler must be a function");
+        return onGameEvent("beat", (tick) => {
+          if (tick.beat >= offset && (tick.beat - offset) % every === 0) handler(tick);
+        });
+      },
+    };
+
     const TEMPO_BPM = 120;
     // Presentation API: read window.tempo in draw() or other scripts.
     // beat is zero-based; phase rises from 0 to 1, pulse falls from 1 to 0.
     // This silent clock freezes on pause/game-over and resets on restart.
     const tempo = window.tempo = { bpm: TEMPO_BPM, seconds: 0, beat: 0, phase: 0, pulse: 1 };
-    let tempoLast;
+    let tempoLast, dispatchedBeat = 0, dispatchingBeats = false;
     function updateTempo(now = performance.now()) {
       if (!state.over && !state.paused) tempo.seconds += Math.max(0, now - tempoLast) / 1000;
       tempoLast = now;
@@ -84,6 +115,16 @@
       tempo.beat = Math.floor(beats);
       tempo.phase = beats - tempo.beat;
       tempo.pulse = 1 - tempo.phase;
+      if (dispatchingBeats) return;
+      const currentState = state;
+      // Deliver crossed beats even after a slow frame; these are not audio scheduling callbacks.
+      dispatchingBeats = true;
+      try {
+        while (dispatchedBeat < tempo.beat && state === currentState && !state.over && !state.paused) {
+          const beat = ++dispatchedBeat;
+          callHooks("beat", { beat, bpm: TEMPO_BPM, seconds: beat * 60 / TEMPO_BPM });
+        }
+      } finally { dispatchingBeats = false; }
     }
 
     function newPullRequest(y) {
@@ -95,6 +136,7 @@
       state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       Object.assign(tempo, { seconds: 0, beat: 0, phase: 0, pulse: 1 });
       tempoLast = performance.now();
+      dispatchedBeat = 0;
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
@@ -132,7 +174,7 @@
         });
       }
       s.square.y += scroll;
-      if (s.square.y > SIZE + SQ / 2) s.square = newSquare();
+      if (s.square.y > SIZE + SQ / 2) callHooks("commit:missed", { square: s.square });
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
@@ -150,17 +192,21 @@
         const bv = 45 + 25 * m;
         b.x += (s.x - b.x) / d * bv * dt;
         b.y += (s.y - b.y) / d * bv * dt;
-        if (d < MONA_R + BUG_R - 4) return gameOver();
+        if (d < MONA_R + BUG_R - 4) { callHooks("enemy:hit", { enemy: b }); return; }
       }
       if (Math.hypot(s.x - s.square.x, s.y - s.square.y) < MONA_R + SQ / 2) {
-        s.score++;
-        s.stamina = Math.min(1, s.stamina + STAMINA_REFILL);
-        s.square = newSquare();
-        if (s.score % 10 === 0) {
-          $("tip").textContent = "Copilot: " + TIPS[s.tipN++ % TIPS.length] + " (" + s.score + " points!)";
-        }
-        updateHud();
+        callHooks("commit:collected", { square: s.square });
       }
+    }
+    function replaceCommit() { state.square = newSquare(); }
+    function rewardCommit() {
+      state.score++;
+      state.stamina = Math.min(1, state.stamina + STAMINA_REFILL);
+      replaceCommit();
+      if (state.score % 10 === 0) {
+        $("tip").textContent = "Copilot: " + TIPS[state.tipN++ % TIPS.length] + " (" + state.score + " points!)";
+      }
+      updateHud();
     }
     function gameOver() {
       updateTempo();
@@ -275,6 +321,9 @@
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
+    onGameEvent("enemy:hit", gameOver);
+    onGameEvent("commit:collected", rewardCommit);
+    onGameEvent("commit:missed", replaceCommit);
     reset();
     cv.focus();
     requestAnimationFrame((t) => { last = t; frame(t); });
