@@ -2,8 +2,8 @@
 
 `fm-drums.mjs` exports `createDrumSynth(context)`, using only Web Audio.
 Kick uses a pitch-dropping sine FM pair plus a short second-harmonic punch layer for
-perceived loudness, the closed hat uses high-passed
-metallic FM, and snare combines a short FM tone with generated noise.
+perceived loudness, the closed hat is mostly high-passed
+noise hiss with a faint FM shimmer, and snare combines a short FM tone with generated noise.
 There are no samples, downloads, dependencies, or build steps.
 
 | API | Behavior |

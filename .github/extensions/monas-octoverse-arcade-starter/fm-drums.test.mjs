@@ -40,7 +40,7 @@ function makeContext() {
   };
 }
 
-for (const [kind, duration, count] of [["kick", 0.48, 3], ["hat", 0.09, 2], ["snare", 0.22, 3]]) {
+for (const [kind, duration, count] of [["kick", 0.48, 3], ["hat", 0.09, 3], ["snare", 0.22, 3]]) {
   test(`${kind}: schedules FM sources, envelopes and complete cleanup`, () => {
     const ctx = makeContext(), drums = createDrumSynth(ctx);
     assert.equal(drums[kind](3, 0.5), 3);
@@ -66,9 +66,19 @@ for (const [kind, duration, count] of [["kick", 0.48, 3], ["hat", 0.09, 2], ["sn
       }
     }
     const amplitude = ctx.nodes.find((node) => node.gain.events[0]?.[1] === 0);
-    assert.equal(amplitude.gain.events[1][1], LEVELS[kind] * 0.5);
+    assert.equal(amplitude.gain.events[1][1], (kind === "hat" ? LEVELS.hatTone : LEVELS[kind]) * 0.5);
     assert.deepEqual(amplitude.gain.events.at(-1), ["linear", 0, 3 + duration]);
-    if (kind === "hat") assert.ok(ctx.nodes.some((node) => node.type === "highpass" && node.frequency.value === 6500));
+    if (kind === "hat") {
+      // Hiss, not chime: a noise source carries most of the level and the FM tone is faint.
+      const hp = ctx.nodes.find((node) => node.type === "highpass" && node.frequency.value === 6500);
+      assert.ok(hp);
+      const noise = sources.find((node) => node.kind === "noise");
+      assert.ok(noise?.buffer.getChannelData(0).some((value) => value !== 0));
+      const hiss = ctx.nodes.find((node) => noise.connections.includes(node));
+      assert.equal(hiss.gain.events[1][1], LEVELS.hat * 0.5);
+      assert.ok(hiss.connections.includes(hp));
+      assert.ok(LEVELS.hat >= 4 * LEVELS.hatTone);
+    }
     if (kind === "snare") {
       const samples = sources[2].buffer.getChannelData(0);
       assert.ok(samples.some((value) => value !== 0));
@@ -88,7 +98,7 @@ test("mix: snare sits under kick and hat, kick has punch, worst-case peak keeps 
   assert.ok(LEVELS.snare + LEVELS.snareNoise < (LEVELS.kick + LEVELS.kickPunch) / 2);
   assert.ok(LEVELS.kickPunch > 0);
   // Kick + hat + three overlapping pickup snares at full velocity must stay below full scale.
-  const peak = LEVELS.output * (LEVELS.kick + LEVELS.kickPunch + LEVELS.hat + 3 * (LEVELS.snare + LEVELS.snareNoise));
+  const peak = LEVELS.output * (LEVELS.kick + LEVELS.kickPunch + LEVELS.hat + LEVELS.hatTone + 3 * (LEVELS.snare + LEVELS.snareNoise));
   assert.ok(peak < 1, `worst-case peak ${peak}`);
   const ctx = makeContext(), drums = createDrumSynth(ctx);
   assert.equal(ctx.nodes[0].gain.value, LEVELS.output);
@@ -177,21 +187,21 @@ test("documented look-ahead adapter schedules on audio time and skips missed ste
   assert.throws(() => scope.start({ bpm: 120, seconds: 0 }), /Enable audio/);
   await scope.enable();
   const sources = () => ctx.nodes.filter((node) => node.started !== undefined);
-  // Kick (FM pair + punch) and hat = 5 sources per downbeat step.
-  assert.equal(sources().length, 5);
+  // Kick (FM pair + punch) and hat (FM pair + noise) = 6 sources per downbeat step.
+  assert.equal(sources().length, 6);
   assert.ok(sources().every((node) => node.started === 2.05));
   ctx.currentTime = 2.03;
   pump();
-  assert.equal(sources().length, 5);
+  assert.equal(sources().length, 6);
   ctx.currentTime = 3;
   pump();
-  assert.equal(sources().length, 10);
-  assert.ok(sources().slice(5).every((node) => Math.abs(node.started - 3.05) < 1e-10));
+  assert.equal(sources().length, 12);
+  assert.ok(sources().slice(6).every((node) => Math.abs(node.started - 3.05) < 1e-10));
   scope.stop();
   assert.equal(cleared, true);
   assert.ok(sources().every((node) => node.disconnected));
   scope.start({ bpm: 90, seconds: 0 });
-  assert.equal(sources().length, 15);
+  assert.equal(sources().length, 18);
   scope.stop();
   assert.throws(() => scope.start({ bpm: 0, seconds: 0 }), /BPM/);
 });

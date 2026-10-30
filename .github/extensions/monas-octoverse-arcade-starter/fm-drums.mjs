@@ -1,7 +1,9 @@
 const FLOOR = 0.0001;
 // Peak gains before the shared 0.3 output stage. Kick punch is a short 2nd-harmonic layer
 // that makes the kick read louder on small speakers without raising its sub peak.
-export const LEVELS = { output: 0.3, kick: 1, kickPunch: 0.35, hat: 0.45, snare: 0.15, snareNoise: 0.28 };
+// The hat is mostly high-passed noise (hiss) with only a faint FM shimmer so it never reads as a chime.
+export const LEVELS = { output: 0.3, kick: 1, kickPunch: 0.35, hat: 0.4, hatTone: 0.08, snare: 0.15, snareNoise: 0.28 };
+const NOISE_SECONDS = 0.25;
 
 export function createDrumSynth(context) {
   if (!context || typeof context.createOscillator !== "function") {
@@ -58,7 +60,18 @@ export function createDrumSynth(context) {
       carrier.frequency.exponentialRampToValueAtTime(55, start + 0.12);
       modulator.frequency.exponentialRampToValueAtTime(55, start + 0.1);
     }
-    const amplitude = envelope(LEVELS[kind], duration * 0.85);
+    const noiseSource = () => {
+      if (!noiseBuffer) {
+        noiseBuffer = context.createBuffer(1, Math.ceil(context.sampleRate * NOISE_SECONDS), context.sampleRate);
+        const samples = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
+      }
+      const noise = node(context.createBufferSource());
+      noise.buffer = noiseBuffer;
+      sources.push(noise);
+      return noise;
+    };
+    const amplitude = envelope(kind === "hat" ? LEVELS.hatTone : LEVELS[kind], duration * 0.85);
     carrier.connect(amplitude);
     if (kind === "kick") {
       const punch = oscillator(300);
@@ -73,20 +86,16 @@ export function createDrumSynth(context) {
       filter.frequency.value = Math.min(6500, context.sampleRate * 0.4);
       filter.Q.value = 0.7;
       amplitude.connect(filter);
+      const hiss = envelope(LEVELS.hat, duration * 0.6);
+      noiseSource().connect(hiss);
+      hiss.connect(filter);
       filter.connect(output);
     } else {
       amplitude.connect(output);
     }
 
     if (kind === "snare") {
-      if (!noiseBuffer) {
-        noiseBuffer = context.createBuffer(1, Math.ceil(context.sampleRate * duration), context.sampleRate);
-        const samples = noiseBuffer.getChannelData(0);
-        for (let i = 0; i < samples.length; i++) samples[i] = Math.random() * 2 - 1;
-      }
-      const noise = node(context.createBufferSource());
-      noise.buffer = noiseBuffer;
-      sources.push(noise);
+      const noise = noiseSource();
       const filter = node(context.createBiquadFilter());
       filter.type = "highpass";
       filter.frequency.value = Math.min(1200, context.sampleRate * 0.4);
