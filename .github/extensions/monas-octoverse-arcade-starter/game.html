@@ -251,7 +251,7 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, heads: [], followers: [], invuln: 0, zaps: [], commitSpawns: 0, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      state = { x: SIZE / 2, y: SIZE / 2, facing: "down", walkFrame: 0, walkBeat: 0, score: 0, time: 0, bugs: [], square: null, heads: [], followers: [], invuln: 0, zaps: [], commitSpawns: 0, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, extras: [], powerups: [], pickups: [], pickupTimer: POWERUP_SPAWN_MIN, blockers: [], bullets: [], blockerTimer: 4, death: null, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       Object.assign(tempo, { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 });
       tempoLast = performance.now();
       tempoBeats = 0;
@@ -266,6 +266,89 @@
       callHooks("transport:changed");
     }
     const speedMult = () => 1 + 3 * Math.min(state.time / SPEED_RAMP_SECONDS, 1) + state.score * 0.03;
+    // Bullets fire on odd tempo beats at the nearest harmful target (bugs and blocker issues).
+    // Webs pull in beneficial pickups (commits, secret keys, powerup pickups) within WEB_RANGE.
+    const BULLET_SPEED = 420, BULLET_R = 4, MONA_WIDTH = MONA_R * 2, WEB_RANGE = 6 * MONA_WIDTH, WEB_PULL = 260;
+    function nearestThreat() {
+      const s = state;
+      let target = null, best = Infinity;
+      for (const b of s.bugs) {
+        const d = Math.hypot(b.x - s.x, b.y - s.y);
+        if (d < best) { best = d; target = { x: b.x, y: b.y }; }
+      }
+      for (const k of s.blockers) {
+        const nx = Math.max(k.x, Math.min(k.x + BLOCKER_W, s.x)), ny = Math.max(k.y, Math.min(k.y + BLOCKER_H, s.y));
+        const d = Math.hypot(nx - s.x, ny - s.y);
+        if (d < best) { best = d; target = { x: k.x + BLOCKER_W / 2, y: k.y + BLOCKER_H / 2 }; }
+      }
+      return target;
+    }
+    function fireBullet() {
+      const s = state;
+      if (!canSteer()) return;
+      const t = nearestThreat();
+      if (!t) return;
+      const d = Math.hypot(t.x - s.x, t.y - s.y) || 1;
+      s.bullets.push({ x: s.x, y: s.y, vx: (t.x - s.x) / d * BULLET_SPEED, vy: (t.y - s.y) / d * BULLET_SPEED });
+    }
+    function updateBullets(dt) {
+      const s = state, kept = [];
+      for (const u of s.bullets) {
+        u.x += u.vx * dt; u.y += u.vy * dt;
+        if (u.x < -20 || u.x > SIZE + 20 || u.y < -20 || u.y > SIZE + 20) continue;
+        const bug = s.bugs.find((b) => Math.hypot(b.x - u.x, b.y - u.y) < BUG_TYPES[b.type || "normal"].r + BULLET_R);
+        if (bug) {
+          s.bugs = s.bugs.filter((b) => b !== bug);
+          s.blasts.push({ x: bug.x, y: bug.y, t: 0.3, color: "88,166,255", scale: 0.4 });
+          continue;
+        }
+        const blocker = s.blockers.find((k) => u.x > k.x - BULLET_R && u.x < k.x + BLOCKER_W + BULLET_R && u.y > k.y - BULLET_R && u.y < k.y + BLOCKER_H + BULLET_R);
+        if (blocker) {
+          s.blockers = s.blockers.filter((k) => k !== blocker);
+          s.blasts.push({ x: blocker.x + BLOCKER_W / 2, y: blocker.y + BLOCKER_H / 2, t: 0.2, color: "88,166,255", scale: 0.8 });
+          continue;
+        }
+        kept.push(u);
+      }
+      s.bullets = kept;
+    }
+    function webTargets() {
+      const s = state;
+      return [s.square, ...s.extras, ...s.secrets, ...s.pickups, ...s.heads].filter((q) => Math.hypot(q.x - s.x, q.y - s.y) <= WEB_RANGE);
+    }
+    function updateWebs(dt) {
+      const s = state;
+      for (const q of webTargets()) {
+        const d = Math.hypot(s.x - q.x, s.y - q.y);
+        if (d < 1) continue;
+        const k = Math.min(d, WEB_PULL * dt) / d;
+        q.x += (s.x - q.x) * k; q.y += (s.y - q.y) * k;
+      }
+    }
+    function drawWebs() {
+      const s = state;
+      if (s.death) return;
+      ctx.lineWidth = 1;
+      for (const q of webTargets()) {
+        const dx = q.x - s.x, dy = q.y - s.y, d = Math.hypot(dx, dy);
+        if (d < 1) continue;
+        const nx = -dy / d, ny = dx / d, fade = 1 - d / WEB_RANGE * 0.6;
+        ctx.strokeStyle = "rgba(230,237,243," + 0.75 * fade + ")";
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(q.x, q.y); ctx.stroke();
+        for (const f of [0.35, 0.65, 0.9]) {
+          const px = s.x + dx * f, py = s.y + dy * f, w = 7 * (1 - Math.abs(f - 0.6));
+          ctx.beginPath();
+          ctx.moveTo(px - nx * w, py - ny * w);
+          ctx.quadraticCurveTo(px + dx * 0.04, py + dy * 0.04, px + nx * w, py + ny * w);
+          ctx.stroke();
+        }
+      }
+    }
+    function drawBullets(g = ctx) {
+      g.fillStyle = "#9be9ff"; g.shadowColor = "#58a6ff"; g.shadowBlur = 8;
+      for (const u of state.bullets) { g.beginPath(); g.arc(u.x, u.y, BULLET_R, 0, 7); g.fill(); }
+      g.shadowBlur = 0;
+    }
     function newSquare() {
       return { x: 30 + Math.random() * (SIZE - 60), y: -SQ };
     }
@@ -321,6 +404,7 @@
       let dy = held("down") - held("up");
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
       tickPowerups(dt);
+      updateWebs(dt);
       const moving = dx !== 0 || dy !== 0;
       if (moving && !reducedMotion.matches) {
         s.walkBeat += dt;
@@ -339,6 +423,7 @@
       s.y = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.y + dy * v * dt));
       updateFollowers(dt);
 
+      updateBullets(dt);
       updateBlockers(dt, m);
       if (s.death || s.over) return;
       s.spawn -= dt;
@@ -964,7 +1049,7 @@
     };
     const layer = (n) => { const c = document.createElement("canvas"); c.width = c.height = n; return [c, c.getContext("2d")]; };
     const [bloomLayer, bctx] = layer(SIZE), [bloomHalf, hctx] = layer(SIZE / 2), [bloomQuarter, qctx] = layer(SIZE / 4), [bloomSmall, sctx] = layer(SIZE / 4);
-    const bloomDrawers = [drawCommit, drawBugs, drawProjectiles, drawMona];
+    const bloomDrawers = [drawCommit, drawBugs, drawProjectiles, drawBullets, drawMona];
     let bloomPulseAt = -Infinity;
     // Additional projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer.
     window.gameBloom = {
@@ -1037,6 +1122,7 @@
         ctx.beginPath(); ctx.arc(b.x, b.y, (10 + b.t * 220) * (b.scale || 1), 0, 7); ctx.stroke();
       }
       drawPickups();
+      drawWebs();
       drawPowerups("drawUnder");
       for (const h of s.heads) drawCopilotHead(h.x, h.y);
       drawProjectiles(ctx);
@@ -1044,6 +1130,7 @@
       for (let i = s.followers.length - 1; i >= 0; i--) drawCopilotHead(s.followers[i].x, s.followers[i].y, 0.85);
       drawMona(ctx);
       drawPowerups("drawOver");
+      drawBullets();
       drawBloom();
     }
     function frame(t) {
@@ -1127,6 +1214,7 @@
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
+    window.gameHooks.onBeat(2, fireBullet, 1);
     onGameEvent("enemy:hit", () => startDeath("bug"));
     onGameEvent("blocker:hit", () => startDeath("blocker"));
     onGameEvent("commit:collected", rewardCommit);
