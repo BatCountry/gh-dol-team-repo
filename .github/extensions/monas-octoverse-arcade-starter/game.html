@@ -267,8 +267,9 @@
     }
     const speedMult = () => 1 + 3 * Math.min(state.time / SPEED_RAMP_SECONDS, 1) + state.score * 0.03;
     // Bullets fire on odd tempo beats at the nearest harmful target (bugs and blocker issues).
-    // Webs pull in beneficial pickups (commits, secret keys, powerup pickups) within WEB_RANGE.
-    const BULLET_SPEED = 420, BULLET_R = 4, MONA_WIDTH = MONA_R * 2, WEB_RANGE = 6 * MONA_WIDTH, WEB_PULL = 260;
+    // Webs are the Dependabot magnet's grappling hooks: only while it is active, they pull beneficial
+    // pickups (commits, secret keys, powerup orbs, Copilot heads) within MAGNET_RADIUS at MAGNET_PULL.
+    const BULLET_SPEED = 420, BULLET_R = 4, MONA_WIDTH = MONA_R * 2, MAGNET_RADIUS = 6 * MONA_WIDTH, MAGNET_PULL = 320;
     function nearestThreat(o = state) {
       const s = state;
       let target = null, best = Infinity;
@@ -320,25 +321,25 @@
     }
     function webTargets() {
       const s = state;
-      return [s.square, ...s.extras, ...s.secrets, ...s.pickups, ...s.heads].filter((q) => Math.hypot(q.x - s.x, q.y - s.y) <= WEB_RANGE);
+      return [s.square, ...s.extras, ...s.secrets, ...s.pickups, ...s.heads].filter((q) => Math.hypot(q.x - s.x, q.y - s.y) <= MAGNET_RADIUS);
     }
     function updateWebs(dt) {
       const s = state;
       for (const q of webTargets()) {
         const d = Math.hypot(s.x - q.x, s.y - q.y);
         if (d < 1) continue;
-        const k = Math.min(d, WEB_PULL * dt) / d;
+        const k = Math.min(d, MAGNET_PULL * dt) / d;
         q.x += (s.x - q.x) * k; q.y += (s.y - q.y) * k;
       }
     }
-    function drawWebs() {
+    function drawWebs(alpha = 1) {
       const s = state;
       if (s.death) return;
       ctx.lineWidth = 1;
       for (const q of webTargets()) {
         const dx = q.x - s.x, dy = q.y - s.y, d = Math.hypot(dx, dy);
         if (d < 1) continue;
-        const nx = -dy / d, ny = dx / d, fade = 1 - d / WEB_RANGE * 0.6;
+        const nx = -dy / d, ny = dx / d, fade = (1 - d / MAGNET_RADIUS * 0.6) * alpha;
         ctx.strokeStyle = "rgba(230,237,243," + 0.75 * fade + ")";
         ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(q.x, q.y); ctx.stroke();
         for (const f of [0.35, 0.65, 0.9]) {
@@ -414,7 +415,6 @@
       let dy = held("down") - held("up");
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
       tickPowerups(dt);
-      updateWebs(dt);
       const moving = dx !== 0 || dy !== 0;
       if (moving && !reducedMotion.matches) {
         s.walkBeat += dt;
@@ -672,7 +672,7 @@
     // onActivate(s, p), onTick(s, dt, p), onExpire(s, p), drawUnder(ctx, s, p), drawOver(ctx, s, p).
     // p is the active instance { id, remaining, data }.
     const POWERUP_SPAWN_MIN = 20, POWERUP_SPAWN_MAX = 40, PICKUP_LIFETIME = 8, PICKUP_R = 14;
-    const GHAS_RADIUS = 90, RUNNERS_SPEED = 1.15, MAGNET_RADIUS = 150, AUTOFIX_RADIUS = 130, MERGE_CHARGES = 3, MERGE_BONUS = 2;
+    const GHAS_RADIUS = 90, RUNNERS_SPEED = 1.15, AUTOFIX_RADIUS = 130, MERGE_CHARGES = 3, MERGE_BONUS = 2;
     const POWERUPS = {
       ghas: {
         name: "GitHub Advanced Security", icon: "🛡️", color: "#58a6ff", duration: 8, weight: 1,
@@ -719,15 +719,12 @@
       },
       dependabot: {
         name: "Dependabot", icon: "🧲", color: "#39c5cf", duration: 8, weight: 1,
-        onTick(s, dt) {
-          for (const q of [s.square, ...s.extras]) {
-            const d = Math.hypot(s.x - q.x, s.y - q.y);
-            if (d < MAGNET_RADIUS && d > 1) { const k = Math.min(d, 320 * dt) / d; q.x += (s.x - q.x) * k; q.y += (s.y - q.y) * k; }
-          }
-        },
+        onTick(s, dt) { updateWebs(dt); },
         drawUnder(ctx, s, p) {
-          ctx.strokeStyle = "rgba(57,197,207," + 0.25 * Math.min(1, p.remaining / 1.5) + ")"; ctx.lineWidth = 2;
+          const fade = Math.min(1, p.remaining / 1.5);
+          ctx.strokeStyle = "rgba(57,197,207," + 0.25 * fade + ")"; ctx.lineWidth = 2;
           ctx.setLineDash([6, 6]); ctx.beginPath(); ctx.arc(s.x, s.y, MAGNET_RADIUS, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+          drawWebs(fade);
         },
       },
       autofix: {
@@ -1132,7 +1129,6 @@
         ctx.beginPath(); ctx.arc(b.x, b.y, (10 + b.t * 220) * (b.scale || 1), 0, 7); ctx.stroke();
       }
       drawPickups();
-      drawWebs();
       drawPowerups("drawUnder");
       for (const h of s.heads) drawCopilotHead(h.x, h.y);
       drawProjectiles(ctx);
