@@ -65,7 +65,7 @@
     const cv = document.getElementById("game"), ctx = cv.getContext("2d");
     const $ = (id) => document.getElementById(id);
     const keys = new Set();
-    const PARALLAX_SPEEDS = [12, 26, 54];
+    const PARALLAX_SPEEDS = [24, 18, 12];
     const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
     const PR_ACTIONS = ["Fix", "Improve", "Refactor", "Test", "Optimize", "Update"];
     const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
@@ -106,15 +106,17 @@
     function step(dt) {
       const s = state, m = speedMult();
       s.time += dt;
-      const scroll = PARALLAX_SPEEDS[2] * m * dt;
+      const gridScroll = PARALLAX_SPEEDS[0] * m ** 1.5 * dt;
+      const prScroll = PARALLAX_SPEEDS[2] * m * dt;
       if (!reducedMotion.matches) {
-        s.backgroundOffsets = s.backgroundOffsets.map((offset, i) => (offset + PARALLAX_SPEEDS[i] * m * dt) % SIZE);
+        s.backgroundOffsets = s.backgroundOffsets.map((offset, i) =>
+          (offset + (i === 0 ? gridScroll : PARALLAX_SPEEDS[i] * m * dt)) % SIZE);
         s.pullRequests = s.pullRequests.map((pr) => {
-          const y = pr.y + scroll;
+          const y = pr.y + prScroll;
           return y > SIZE + 20 ? newPullRequest(y - SIZE - 20) : { ...pr, y };
         });
       }
-      s.square.y += scroll;
+      s.square.y += gridScroll;
       if (s.square.y > SIZE + SQ / 2) s.square = newSquare();
       let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
@@ -163,7 +165,7 @@
         ctx.beginPath(); ctx.moveTo(SIZE / 2, -80); ctx.lineTo(x, SIZE); ctx.stroke();
       }
       for (let i = 0; i < 8; i++) {
-        const depth = ((i + grid / 60) % 8) / 8, y = depth * depth * SIZE;
+        const y = (i * 60 + grid) % SIZE;
         ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(SIZE, y); ctx.stroke();
       }
       ctx.font = "10px monospace";
