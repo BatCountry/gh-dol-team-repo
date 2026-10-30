@@ -50,7 +50,7 @@
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Move with arrow keys or WASD (or press/drag on the board). Hold Shift to sprint (stamina refills only when you collect commits). Press Enter or Space to restart.</p>
+    <p class="help">Move with arrow keys or WASD (or press/drag on the board). Hold Shift (or double-click/double-tap and hold) to sprint (stamina refills only when you collect commits). Press Enter or Space to restart.</p>
   </main>
   <script>
     const TIPS = [
@@ -65,7 +65,7 @@
     const cv = document.getElementById("game"), ctx = cv.getContext("2d");
     const $ = (id) => document.getElementById(id);
     const keys = new Set();
-    let best = 0, state, last, shiftHeld = false;
+    let best = 0, state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
 
     function reset() {
       state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0 };
@@ -105,7 +105,7 @@
       let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
       const moving = dx !== 0 || dy !== 0;
-      s.sprinting = shiftHeld && moving && s.stamina > 0;
+      s.sprinting = (shiftHeld || pointerSprint) && moving && s.stamina > 0;
       if (s.sprinting) s.stamina = Math.max(0, s.stamina - SPRINT_DRAIN * dt);
       const v = (190 + Math.min(m, 4) * 10) * (s.sprinting ? SPRINT_MULT : 1);
       s.x = Math.max(MONA_R, Math.min(SIZE - MONA_R, s.x + dx * v * dt));
@@ -173,7 +173,7 @@
       draw();
       requestAnimationFrame(frame);
     }
-    function restart() { reset(); keys.clear(); cv.focus(); }
+    function restart() { reset(); keys.clear(); pointerSprint = false; cv.focus(); }
 
     const MAP = { ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
                   ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" };
@@ -192,7 +192,7 @@
       if (d) { e.preventDefault(); keys.add(d); }
     });
     addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; const d = MAP[e.key]; if (d) keys.delete(d); });
-    addEventListener("blur", () => { keys.clear(); shiftHeld = false; });
+    addEventListener("blur", () => { keys.clear(); shiftHeld = false; pointerSprint = false; });
     function pointer(e) {
       if (state.paused || (!e.buttons && e.pointerType !== "touch")) return;
       const r = cv.getBoundingClientRect();
@@ -201,9 +201,15 @@
       if (px < state.x - 8) keys.add("left"); else if (px > state.x + 8) keys.add("right");
       if (py < state.y - 8) keys.add("up"); else if (py > state.y + 8) keys.add("down");
     }
-    cv.addEventListener("pointerdown", pointer);
+    cv.addEventListener("pointerdown", (e) => {
+      const now = performance.now();
+      pointerSprint = now - lastDown < 350;
+      lastDown = now;
+      pointer(e);
+    });
     cv.addEventListener("pointermove", pointer);
-    addEventListener("pointerup", () => keys.clear());
+    addEventListener("pointerup", () => { keys.clear(); pointerSprint = false; });
+    addEventListener("pointercancel", () => { keys.clear(); pointerSprint = false; });
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
