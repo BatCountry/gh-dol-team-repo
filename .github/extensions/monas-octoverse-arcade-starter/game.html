@@ -45,6 +45,7 @@
 <body>
   <main>
     <h1>Mona's <span>Octoverse</span> Arcade</h1>
+    <p><button id="sound" type="button" aria-pressed="false">Enable sound</button> <span id="soundStatus" role="status" aria-live="polite"></span></p>
     <div id="hud"><span>Score: <span id="score">0</span></span><span>Speed: <span id="speed">1.0</span>x</span><span>Best: <span id="best">0</span></span></div>
     <div id="stamina"><span>Sprint</span><div id="staminaTrack" role="progressbar" aria-label="Sprint stamina" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100"><div id="staminaFill"></div></div></div>
     <div id="powerups" role="group" aria-label="Powerups"></div>
@@ -168,7 +169,8 @@
       ["Needs more abstraction.", "No, not that abstraction."],
       ["Looks good, except for", "the part where it changes."],
     ];
-    let state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
+    let state, last, shiftHeld = false, pointerSprint = false, lastDown = 0, activePointer = null;
+    const pointerDirs = new Set();
 
     const hooks = new Map();
     function onGameEvent(event, handler) {
@@ -192,8 +194,10 @@
     // Copilot events: copilot:collected { head }, copilot:shielded { enemy | blocker, follower }.
     // enemy:hit / blocker:hit fire only for fatal hits (not when a Copilot follower or invulnerability blocks them).
     // beat payload: { beat, parity: "odd" | "even", bpm, seconds } at the beat boundary.
+    // transport:changed fires after reset, pause/resume, death, game-over or visibility changes.
     window.gameHooks = {
       on: onGameEvent,
+      get playing() { return !state.over && !state.paused && !state.death && !document.hidden; },
       onBeat(every, handler, offset = 0) {
         if (!Number.isInteger(every) || every < 1 || !Number.isInteger(offset) || offset < 0) {
           throw new RangeError("Beat interval must be a positive integer; offset must be a non-negative integer");
@@ -205,11 +209,11 @@
       },
     };
 
-    const TEMPO_MIN = 60, TEMPO_MAX = 180, SPEED_RAMP_SECONDS = 60;
+    const TEMPO_MIN = 80, TEMPO_MAX = 240, SPEED_RAMP_SECONDS = 60;
     // Presentation API: read window.tempo in draw() or other scripts.
     // beat is zero-based; phase rises from 0 to 1, pulse falls from 1 to 0.
     // This silent clock freezes on pause/death/game-over and resets on restart.
-    // BPM follows the gameplay speed timer from 60 to 180 over 60 seconds, ignoring score.
+    // BPM follows the gameplay speed timer from 80 to 240 over 60 seconds, ignoring score.
     // Beat 0 is the initial even state; emitted beats start at 1 (odd), then 2 (even).
     const tempo = window.tempo = { bpm: TEMPO_MIN, seconds: 0, beat: 0, parity: "even", phase: 0, pulse: 1 };
     let tempoLast, tempoBeats = 0, dispatchedBeat = 0, dispatchingBeats = false;
@@ -252,15 +256,17 @@
       tempoLast = performance.now();
       tempoBeats = 0;
       dispatchedBeat = 0;
+      bloomPulseAt = -Infinity;
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
       $("cause").textContent = "A bug got Mona!";
       updateHud();
       $("tip").textContent = "Copilot: I'm here to help. Collect green commits and dodge the bugs!";
+      callHooks("transport:changed");
     }
     const speedMult = () => 1 + 3 * Math.min(state.time / SPEED_RAMP_SECONDS, 1) + state.score * 0.03;
-    // Bullets fire on odd tempo beats at the nearest harmful target (bugs and blocker issues).
+    // Bullets fire on odd tempo beats in Mona's movement direction (last movement or facing when stationary); blocker issues absorb bullets.
     // Webs pull in beneficial pickups (commits, secret keys, powerup pickups) within WEB_RANGE.
     const BULLET_SPEED = 420, BULLET_R = 4, MONA_WIDTH = MONA_R * 2, WEB_RANGE = 6 * MONA_WIDTH, WEB_PULL = 260;
     function nearestThreat() {
@@ -278,13 +284,18 @@
       }
       return target;
     }
+    const FACING_VECTORS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+    function shootFrom(o, copilot) {
+      const [ax, ay] = state.aim || FACING_VECTORS[state.facing] || [0, 1];
+      state.bullets.push({ x: o.x, y: o.y, vx: ax * BULLET_SPEED, vy: ay * BULLET_SPEED, copilot });
+      return true;
+    }
+    // Each Copilot follower fires alongside every shot Mona takes.
     function fireBullet() {
       const s = state;
-      if (s.over || s.death || s.paused) return;
-      const t = nearestThreat();
-      if (!t) return;
-      const d = Math.hypot(t.x - s.x, t.y - s.y) || 1;
-      s.bullets.push({ x: s.x, y: s.y, vx: (t.x - s.x) / d * BULLET_SPEED, vy: (t.y - s.y) / d * BULLET_SPEED });
+      if (!canSteer()) return;
+      if (!shootFrom(s, false)) return;
+      for (const f of s.followers) shootFrom(f, true);
     }
     function updateBullets(dt) {
       const s = state, kept = [];
@@ -295,11 +306,7 @@
         const bug = s.bugs.find((b) => Math.hypot(b.x - u.x, b.y - u.y) < BUG_TYPES[b.type || "normal"].r + BULLET_R);
         if (bug) { killBug(bug); continue; }
         const blocker = s.blockers.find((k) => u.x > k.x - BULLET_R && u.x < k.x + BLOCKER_W + BULLET_R && u.y > k.y - BULLET_R && u.y < k.y + BLOCKER_H + BULLET_R);
-        if (blocker) {
-          s.blockers = s.blockers.filter((k) => k !== blocker);
-          s.blasts.push({ x: blocker.x + BLOCKER_W / 2, y: blocker.y + BLOCKER_H / 2, t: 0.2, color: "88,166,255", scale: 0.8 });
-          continue;
-        }
+        if (blocker) continue; // blockers are indestructible; bullets are absorbed
         kept.push(u);
       }
       s.bullets = kept;
@@ -366,7 +373,8 @@
       }
       return false;
     }
-    function drawBoss() {
+    function drawBoss(g = ctx) {
+      const ctx = g;
       const s = state, b = s.boss;
       ctx.fillStyle = "#ff7b72"; ctx.shadowColor = "#f85149"; ctx.shadowBlur = 10;
       for (const u of s.bossShots) { ctx.beginPath(); ctx.arc(u.x, u.y, BOSS_SHOT_R, 0, 7); ctx.fill(); }
@@ -423,10 +431,14 @@
         }
       }
     }
-    function drawBullets() {
-      ctx.fillStyle = "#9be9ff"; ctx.shadowColor = "#58a6ff"; ctx.shadowBlur = 8;
-      for (const u of state.bullets) { ctx.beginPath(); ctx.arc(u.x, u.y, BULLET_R, 0, 7); ctx.fill(); }
-      ctx.shadowBlur = 0;
+    function drawBullets(g = ctx) {
+      g.shadowBlur = 8;
+      for (const u of state.bullets) {
+        g.fillStyle = u.copilot ? "#7ee787" : "#9be9ff"; g.shadowColor = u.copilot ? "#3fb950" : "#58a6ff";
+        g.beginPath(); g.arc(u.x, u.y, BULLET_R, 0, 7); g.fill();
+        if (u.copilot) { g.fillStyle = "#0d1117"; g.beginPath(); g.arc(u.x, u.y, BULLET_R * 0.4, 0, 7); g.fill(); }
+      }
+      g.shadowBlur = 0;
     }
     function newSquare() {
       return { x: 30 + Math.random() * (SIZE - 60), y: -SQ };
@@ -499,7 +511,8 @@
         b.x += ux * sp * dt; b.y += uy * sp * dt;
       }
     }
-    function drawBug(b) {
+    function drawBug(b, g = ctx) {
+      const ctx = g;
       const bt = BUG_TYPES[b.type || "normal"], r = bt.r, k = r / BUG_R, c = bt.color;
       ctx.save(); ctx.translate(b.x, b.y);
       ctx.fillStyle = c; ctx.strokeStyle = c; ctx.lineWidth = 2;
@@ -602,12 +615,14 @@
       s.heads = s.heads.filter((h) => h.y < SIZE + HEAD_R);
       if (s.invuln > 0) s.invuln = Math.max(0, s.invuln - dt);
       s.zaps = s.zaps.map((z) => ({ ...z, t: z.t + dt })).filter((z) => z.t < 0.5);
-      let dx = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
-      let dy = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
+      const held = (d) => keys.has(d) || pointerDirs.has(d) ? 1 : 0;
+      let dx = held("right") - held("left");
+      let dy = held("down") - held("up");
       if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
       tickPowerups(dt);
       updateWebs(dt);
       const moving = dx !== 0 || dy !== 0;
+      if (moving) s.aim = [dx, dy];
       if (moving && !reducedMotion.matches) {
         s.walkBeat += dt;
         if (s.walkBeat >= WALK_BEAT) {
@@ -765,11 +780,9 @@
     function startDeath(cause = "bug") {
       if (state.death || state.over) return;
       updateTempo();
-      keys.clear();
-      shiftHeld = false;
-      pointerSprint = false;
       state.sprinting = false;
       state.death = { cause, time: 0, y: state.y, angle: 0 };
+      callHooks("transport:changed");
       const tip = (DEATH_CAUSES[cause] || DEATH_CAUSES.bug).tip;
       if (tip) $("tip").textContent = tip;
       updateHud();
@@ -1099,6 +1112,7 @@
       if (state.over) return;
       updateTempo();
       state.over = true;
+      callHooks("transport:changed");
       const isNew = state.score > best;
       if (isNew) {
         best = state.score;
@@ -1185,18 +1199,117 @@
         ctx.restore();
       }
     }
+    function drawCommit(g) {
+      const q = state.square;
+      g.fillStyle = "#3fb950"; g.shadowColor = "#3fb950"; g.shadowBlur = 10;
+      g.fillRect(q.x - SQ / 2, q.y - SQ / 2, SQ, SQ);
+      g.shadowBlur = 0;
+      for (const e of state.extras) {
+        g.globalAlpha = e.ttl < 1.5 && Math.floor(e.ttl * 8) % 2 === 0 ? 0.3 : 1;
+        g.fillStyle = "#56d364"; g.fillRect(e.x - SQ / 2, e.y - SQ / 2, SQ, SQ);
+      }
+      g.globalAlpha = 1;
+    }
+    function drawBugs(g) {
+      for (const b of state.bugs) drawBug(b, g);
+      if (state.boss) drawBoss(g);
+    }
+    function drawMona(g) {
+      const s = state;
+      g.save();
+      g.translate(s.x, s.death ? s.death.y : s.y);
+      if (s.death) g.rotate(s.death.angle);
+      if (s.invuln > 0) {
+        // Reduced motion: a gentle steady fade with a halo instead of rapid blinking.
+        if (reducedMotion.matches) g.globalAlpha = 0.55;
+        else g.globalAlpha = Math.floor(s.invuln * 10) % 2 ? 0.2 : 1;
+        g.strokeStyle = "#7ee787"; g.lineWidth = 2;
+        g.beginPath(); g.arc(0, 0, MONA_R + 6, 0, 7); g.stroke();
+      }
+      g.imageSmoothingEnabled = false;
+      const sprite = monaSprites[s.facing][s.walkFrame];
+      g.drawImage(sprite, -20, -20, sprite.width * 2, sprite.height * 2);
+      g.restore();
+    }
+    // Projectiles: Copilot shield zaps fired at a hazard.
+    function drawProjectiles(g) {
+      for (const z of state.zaps) {
+        const a = 1 - z.t / 0.5;
+        g.strokeStyle = "rgba(126,231,135," + a + ")"; g.lineWidth = 3;
+        g.beginPath(); g.moveTo(z.fx, z.fy); g.lineTo(z.x, z.y); g.stroke();
+        g.beginPath(); g.arc(z.x, z.y, 8 + z.t * (reducedMotion.matches ? 40 : 120), 0, 7); g.stroke();
+      }
+    }
+
+    // CRT bloom: bloomed foreground is redrawn to a layer, downsampled (blur), and added back.
+    // Every second even beat (2, 6, 10...) pulses toward PEAK and decays back to BASE.
+    // width = blur radius in px, wash = mix toward white (less saturated, higher value), intensity = additive strength.
+    // Uses downsampling instead of ctx.filter so it also works in WebKit.
+    const BLOOM = {
+      base: { width: 5, wash: 0, intensity: 0.7 },
+      peak: { width: 12, wash: 0.35, intensity: 1.4 },
+      decay: 0.18, // seconds of tempo time for the pulse to fall to ~37%
+      pulseEvery: 4, pulseOffset: 2, // gameHooks.onBeat(4, fn, 2) -> beats 2, 6, 10...
+    };
+    const layer = (n) => { const c = document.createElement("canvas"); c.width = c.height = n; return [c, c.getContext("2d")]; };
+    const [bloomLayer, bctx] = layer(SIZE), [bloomHalf, hctx] = layer(SIZE / 2), [bloomQuarter, qctx] = layer(SIZE / 4), [bloomSmall, sctx] = layer(SIZE / 4);
+    const bloomDrawers = [drawCommit, drawBugs, drawProjectiles, drawBullets, drawMona];
+    let bloomPulseAt = -Infinity;
+    // Additional projectile renderers call gameBloom.add((g) => ...) to also draw into the bloom layer.
+    window.gameBloom = {
+      config: BLOOM,
+      add(drawFn) {
+        if (typeof drawFn !== "function") throw new TypeError("Bloom drawer must be a function");
+        bloomDrawers.push(drawFn);
+        return () => { const i = bloomDrawers.indexOf(drawFn); if (i >= 0) bloomDrawers.splice(i, 1); };
+      },
+      level: () => bloomLevel(),
+    };
+    window.gameHooks.onBeat(BLOOM.pulseEvery, ({ seconds }) => { bloomPulseAt = seconds; }, BLOOM.pulseOffset);
+    function bloomLevel() {
+      const since = tempo.seconds - bloomPulseAt;
+      return reducedMotion.matches || !(since >= 0) ? 0 : Math.exp(-since / BLOOM.decay);
+    }
+    function drawBloom() {
+      const k = bloomLevel(), { base, peak } = BLOOM, mix = (key) => base[key] + (peak[key] - base[key]) * k;
+      bctx.clearRect(0, 0, SIZE, SIZE);
+      for (const drawFn of bloomDrawers) {
+        bctx.save();
+        try { drawFn(bctx); } catch (error) { console.error("Bloom drawer failed", error); }
+        bctx.restore();
+      }
+      // Halve repeatedly so downsampling averages instead of aliasing.
+      hctx.clearRect(0, 0, SIZE / 2, SIZE / 2); hctx.drawImage(bloomLayer, 0, 0, SIZE / 2, SIZE / 2);
+      qctx.clearRect(0, 0, SIZE / 4, SIZE / 4); qctx.drawImage(bloomHalf, 0, 0, SIZE / 4, SIZE / 4);
+      const w = Math.max(8, Math.min(SIZE / 4, Math.round(SIZE / mix("width"))));
+      if (bloomSmall.width !== w) bloomSmall.width = bloomSmall.height = w;
+      else sctx.clearRect(0, 0, w, w);
+      sctx.globalCompositeOperation = "source-over";
+      sctx.drawImage(bloomQuarter, 0, 0, w, w);
+      const wash = mix("wash");
+      if (wash > 0.005) {
+        sctx.globalCompositeOperation = "source-atop";
+        sctx.fillStyle = `rgba(255,255,255,${wash.toFixed(3)})`;
+        sctx.fillRect(0, 0, w, w);
+      }
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+      // Four half-texel offsets soften bilinear upscaling into a rounder glow.
+      const o = SIZE / w / 2;
+      for (let a = mix("intensity"); a > 0.01; a -= 1) {
+        ctx.globalAlpha = Math.min(1, a) / 4;
+        for (const [dx, dy] of [[-o, -o], [o, -o], [-o, o], [o, o]]) ctx.drawImage(bloomSmall, dx, dy, SIZE, SIZE);
+      }
+      ctx.restore();
+    }
+
     function draw() {
       const s = state;
       drawBackground();
       drawBlockers();
-      ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
-      ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
-      ctx.shadowBlur = 0;
-      for (const q of s.extras) {
-        ctx.globalAlpha = q.ttl < 1.5 && Math.floor(q.ttl * 8) % 2 === 0 ? 0.3 : 1;
-        ctx.fillStyle = "#56d364"; ctx.fillRect(q.x - SQ / 2, q.y - SQ / 2, SQ, SQ);
-      }
-      ctx.globalAlpha = 1;
+      drawCommit(ctx);
       for (const q of s.secrets) {
         const left = Math.max(0, 1 - q.age / SECRET_FUSE), urgent = left < 0.4 && Math.floor(q.age * 8) % 2 === 0;
         ctx.fillStyle = urgent ? "#ffdf5d" : "#d29922";
@@ -1216,31 +1329,13 @@
       drawWebs();
       drawPowerups("drawUnder");
       for (const h of s.heads) drawCopilotHead(h.x, h.y);
-      for (const z of s.zaps) {
-        const a = 1 - z.t / 0.5;
-        ctx.strokeStyle = "rgba(126,231,135," + a + ")"; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.moveTo(z.fx, z.fy); ctx.lineTo(z.x, z.y); ctx.stroke();
-        ctx.beginPath(); ctx.arc(z.x, z.y, 8 + z.t * (reducedMotion.matches ? 40 : 120), 0, 7); ctx.stroke();
-      }
-      for (const b of s.bugs) drawBug(b);
+      drawProjectiles(ctx);
+      drawBugs(ctx);
       for (let i = s.followers.length - 1; i >= 0; i--) drawCopilotHead(s.followers[i].x, s.followers[i].y, 0.85);
-      ctx.save();
-      ctx.translate(s.x, s.death ? s.death.y : s.y);
-      if (s.death) ctx.rotate(s.death.angle);
-      if (s.invuln > 0) {
-        // Reduced motion: a gentle steady fade with a halo instead of rapid blinking.
-        if (reducedMotion.matches) ctx.globalAlpha = 0.55;
-        else ctx.globalAlpha = Math.floor(s.invuln * 10) % 2 ? 0.2 : 1;
-        ctx.strokeStyle = "#7ee787"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(0, 0, MONA_R + 6, 0, 7); ctx.stroke();
-      }
-      ctx.imageSmoothingEnabled = false;
-      const sprite = monaSprites[s.facing][s.walkFrame];
-      ctx.drawImage(sprite, -20, -20, sprite.width * 2, sprite.height * 2);
-      ctx.restore();
+      drawMona(ctx);
       drawPowerups("drawOver");
       drawBullets();
-      drawBoss();
+      drawBloom();
     }
     function frame(t) {
       const dt = Math.min((t - last) / 1000 || 0, 0.05);
@@ -1254,7 +1349,15 @@
       draw();
       requestAnimationFrame(frame);
     }
-    function restart() { reset(); keys.clear(); shiftHeld = false; pointerSprint = false; lastDown = 0; cv.focus(); }
+    function restart() { reset(); cv.focus(); }
+    const canSteer = () => !state.over && !state.death && !state.paused;
+    function releaseInput() {
+      keys.clear(); pointerDirs.clear();
+      shiftHeld = false; pointerSprint = false; activePointer = null; lastDown = 0;
+    }
+    // Reset, pause/resume, death, game over and tab visibility all fire transport:changed,
+    // so held keys/pointers are released in one place instead of in each transition.
+    onGameEvent("transport:changed", releaseInput);
 
     const MAP = { ArrowLeft: "left", a: "left", A: "left", ArrowRight: "right", d: "right", D: "right",
                   ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" };
@@ -1262,7 +1365,7 @@
       if (state.over) return;
       updateTempo();
       state.paused = !state.paused;
-      keys.clear();
+      callHooks("transport:changed");
       $("paused").classList.toggle("show", state.paused);
     }
     addEventListener("keydown", (e) => {
@@ -1270,20 +1373,26 @@
       if (e.key === "Escape") { e.preventDefault(); if (!e.repeat) togglePause(); return; }
       if (state.paused) return;
       if ((state.over || state.death) && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); return restart(); }
-      if (state.over || state.death) return;
+      if (!canSteer()) return;
       const d = MAP[e.key];
       if (d) { e.preventDefault(); state.facing = d; keys.add(d); }
     });
     addEventListener("keyup", (e) => { if (e.key === "Shift") shiftHeld = false; const d = MAP[e.key]; if (d) keys.delete(d); });
-    addEventListener("blur", () => { keys.clear(); shiftHeld = false; pointerSprint = false; });
+    addEventListener("blur", releaseInput);
+    document.addEventListener("visibilitychange", () => {
+      updateTempo();
+      callHooks("transport:changed");
+    });
+    // Steering follows only the pointer/finger that started on the board and keeps
+    // its own direction set, so lifting it never cancels held keyboard keys.
     function pointer(e) {
-      if (state.over || state.death || state.paused || (!e.buttons && e.pointerType !== "touch")) return;
+      if (e.pointerId !== activePointer || !canSteer()) return;
       const r = cv.getBoundingClientRect();
       const px = (e.clientX - r.left) * SIZE / r.width, py = (e.clientY - r.top) * SIZE / r.height;
-      keys.clear();
-      if (px < state.x - 8) keys.add("left"); else if (px > state.x + 8) keys.add("right");
-      if (py < state.y - 8) keys.add("up"); else if (py > state.y + 8) keys.add("down");
-      if (keys.size) {
+      pointerDirs.clear();
+      if (px < state.x - 8) pointerDirs.add("left"); else if (px > state.x + 8) pointerDirs.add("right");
+      if (py < state.y - 8) pointerDirs.add("up"); else if (py > state.y + 8) pointerDirs.add("down");
+      if (pointerDirs.size) {
         const horizontalDistance = Math.abs(px - state.x), verticalDistance = Math.abs(py - state.y);
         state.facing = horizontalDistance >= verticalDistance
           ? (px < state.x ? "left" : "right")
@@ -1291,15 +1400,21 @@
       }
     }
     cv.addEventListener("pointerdown", (e) => {
-      if (state.over || state.death || state.paused) return;
+      if (!canSteer() || (activePointer !== null && activePointer !== e.pointerId)) return;
       const now = performance.now();
       pointerSprint = now - lastDown < 350;
       lastDown = now;
+      activePointer = e.pointerId;
+      cv.setPointerCapture?.(e.pointerId);
       pointer(e);
     });
     cv.addEventListener("pointermove", pointer);
-    addEventListener("pointerup", () => { keys.clear(); pointerSprint = false; });
-    addEventListener("pointercancel", () => { keys.clear(); pointerSprint = false; });
+    function endPointer(e) {
+      if (e.pointerId !== activePointer) return;
+      activePointer = null; pointerDirs.clear(); pointerSprint = false;
+    }
+    addEventListener("pointerup", endPointer);
+    addEventListener("pointercancel", endPointer);
     $("restart").addEventListener("click", restart);
     $("restartPaused").addEventListener("click", restart);
 
@@ -1314,6 +1429,39 @@
     reset();
     cv.focus();
     requestAnimationFrame((t) => { last = t; frame(t); });
+  </script>
+  <script type="module">
+    import { createGameAudio } from "./game-audio.mjs";
+    const button = document.getElementById("sound");
+    const status = document.getElementById("soundStatus");
+    let enabled = false;
+    function showDisabled() {
+      enabled = false;
+      button.textContent = "Enable sound";
+      button.setAttribute("aria-pressed", "false");
+    }
+    const audio = createGameAudio({
+      hooks: window.gameHooks,
+      tempo: window.tempo,
+      onError(error) {
+        console.error("Game audio failed", error);
+        showDisabled();
+        status.textContent = "Sound unavailable: " + error.message;
+      },
+    });
+    button.addEventListener("click", async () => {
+      status.textContent = "";
+      if (enabled) { audio.disable(); showDisabled(); return; }
+      button.disabled = true;
+      try {
+        enabled = await audio.enable();
+        if (enabled) {
+          button.textContent = "Mute sound";
+          button.setAttribute("aria-pressed", "true");
+        }
+      } finally { button.disabled = false; }
+    });
+    addEventListener("pagehide", () => { audio.disable(); showDisabled(); });
   </script>
 </body>
 </html>
