@@ -20,7 +20,7 @@ Mona's Octoverse Arcade as a Copilot App canvas extension.
 - Add an encouraging Copilot sidekick tip every 10 points.
 - Once the baseline works, add the team's own visual style and a stretch goal.
 - Preserve the canvas registration and serving in `extension.mjs`; implement
-  the game inside the canvas in `game.html`.
+  the game inside the canvas in `.github/extensions/monas-octoverse-arcade-starter/game.html`.
 - Keep the starter intentionally minimal until the team asks to build the game;
   do not turn it into a finished reference game or add stretch goals early.
 
