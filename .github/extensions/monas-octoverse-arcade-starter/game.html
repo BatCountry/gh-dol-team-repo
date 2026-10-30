@@ -765,6 +765,7 @@
       }
     }
     function drawPickups() {
+      ctx.save();
       ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "16px system-ui, sans-serif";
       for (const k of state.pickups) {
         const def = POWERUPS[k.id], left = 1 - k.age / PICKUP_LIFETIME;
@@ -775,6 +776,7 @@
         ctx.shadowBlur = 0;
         ctx.fillStyle = "#fff"; ctx.fillText(def.icon, k.x, k.y + 1);
       }
+      ctx.restore();
     }
     let powerupSlots = null;
     function updatePowerupHud() {
@@ -849,31 +851,44 @@
     }
     function drawBlockers() {
       for (const b of state.blockers) {
+        ctx.save();
+        ctx.translate(b.x, b.y);
         ctx.fillStyle = "#021409";
-        ctx.fillRect(b.x, b.y, BLOCKER_W, BLOCKER_H);
+        ctx.fillRect(0, 0, BLOCKER_W, BLOCKER_H);
         ctx.strokeStyle = "#39ef86"; ctx.lineWidth = 2;
-        ctx.strokeRect(b.x + 1, b.y + 1, BLOCKER_W - 2, BLOCKER_H - 2);
+        ctx.strokeRect(1, 1, BLOCKER_W - 2, BLOCKER_H - 2);
+        const padding = 8, maxWidth = BLOCKER_W - padding * 2;
+        ctx.beginPath();
+        ctx.rect(padding, padding, maxWidth, BLOCKER_H - padding * 2);
+        ctx.clip();
+        ctx.textAlign = "left"; ctx.textBaseline = "top";
         ctx.fillStyle = "#39ef86";
         ctx.font = "bold 11px monospace";
-        ctx.fillText("Blocker issue", b.x + 8, b.y + 17);
+        ctx.fillText("Blocker issue", padding, 8, maxWidth);
         ctx.font = "9px monospace";
         ctx.fillStyle = "#75b88c";
-        ctx.fillText("#" + b.number + " @reviewer", b.x + 8, b.y + 31);
-        ctx.fillText("Requested changes", b.x + 8, b.y + 43);
+        ctx.fillText("#" + b.number + " @reviewer", padding, 24, maxWidth);
+        ctx.fillText("Requested changes", padding, 36, maxWidth);
         ctx.fillStyle = "#b3ffcb";
         ctx.font = "10px monospace";
-        const lines = [""], maxWidth = BLOCKER_W - 16;
-        for (const word of b.lines.join(" ").split(" ")) {
-          const i = lines.length - 1, next = lines[i] ? lines[i] + " " + word : word;
-          if (ctx.measureText(next).width > maxWidth) lines.push(word);
-          else lines[i] = next;
+        const lines = [];
+        let text = b.lines.join(" ");
+        while (text && lines.length < 4) {
+          let end = text.length;
+          while (end > 1 && ctx.measureText(text.slice(0, end)).width > maxWidth) end--;
+          if (end < text.length) {
+            const space = text.lastIndexOf(" ", end);
+            if (space > 0) end = space;
+          }
+          lines.push(text.slice(0, end));
+          text = text.slice(end).trimStart();
         }
-        if (lines.length > 4) {
-          lines.length = 4;
-          while (ctx.measureText(lines[3] + "...").width > maxWidth) lines[3] = lines[3].slice(0, -1);
+        if (text) {
+          while (lines[3] && ctx.measureText(lines[3] + "...").width > maxWidth) lines[3] = lines[3].slice(0, -1);
           lines[3] += "...";
         }
-        lines.forEach((line, i) => ctx.fillText(line, b.x + 8, b.y + 61 + i * 12));
+        lines.forEach((line, i) => ctx.fillText(line, padding, 52 + i * 12, maxWidth));
+        ctx.restore();
       }
     }
     function draw() {
