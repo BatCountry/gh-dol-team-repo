@@ -71,6 +71,21 @@
     const PR_SUBJECTS = ["commit stream", "merge queue", "login flow", "build pipeline", "arcade controls", "bug radar", "release notes", "cache cleanup"];
     let best = 0, state, last, shiftHeld = false, pointerSprint = false, lastDown = 0;
 
+    const TEMPO_BPM = 120;
+    // Presentation API: read window.tempo in draw() or other scripts.
+    // beat is zero-based; phase rises from 0 to 1, pulse falls from 1 to 0.
+    // This silent clock freezes on pause/game-over and resets on restart.
+    const tempo = window.tempo = { bpm: TEMPO_BPM, seconds: 0, beat: 0, phase: 0, pulse: 1 };
+    let tempoLast;
+    function updateTempo(now = performance.now()) {
+      if (!state.over && !state.paused) tempo.seconds += Math.max(0, now - tempoLast) / 1000;
+      tempoLast = now;
+      const beats = tempo.seconds * TEMPO_BPM / 60;
+      tempo.beat = Math.floor(beats);
+      tempo.phase = beats - tempo.beat;
+      tempo.pulse = 1 - tempo.phase;
+    }
+
     function newPullRequest(y) {
       const pick = (items) => items[Math.floor(Math.random() * items.length)];
       const number = 1 + Math.floor(Math.random() * 9999);
@@ -78,6 +93,8 @@
     }
     function reset() {
       state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      Object.assign(tempo, { seconds: 0, beat: 0, phase: 0, pulse: 1 });
+      tempoLast = performance.now();
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
@@ -146,6 +163,7 @@
       }
     }
     function gameOver() {
+      updateTempo();
       state.over = true;
       best = Math.max(best, state.score);
       $("final").textContent = state.score;
@@ -211,6 +229,7 @@
     function frame(t) {
       const dt = Math.min((t - last) / 1000 || 0, 0.05);
       last = t;
+      updateTempo();
       if (!state.over && !state.paused) { step(dt); if (!state.over) updateHud(); }
       draw();
       requestAnimationFrame(frame);
@@ -221,6 +240,7 @@
                   ArrowUp: "up", w: "up", W: "up", ArrowDown: "down", s: "down", S: "down" };
     function togglePause() {
       if (state.over) return;
+      updateTempo();
       state.paused = !state.paused;
       keys.clear();
       $("paused").classList.toggle("show", state.paused);
