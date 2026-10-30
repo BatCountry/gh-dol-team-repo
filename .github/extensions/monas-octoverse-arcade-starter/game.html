@@ -50,7 +50,7 @@
       <div id="paused" role="status"><h2>Paused</h2><p>Press Esc to resume</p><button id="restartPaused" type="button">Restart</button></div>
     </div>
     <div id="sidekick" role="status" aria-live="polite"><span class="icon" aria-hidden="true">🤖</span><p id="tip">Copilot: I'm here to help. Collect green commits and dodge the bugs!</p></div>
-    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Press Enter or Space to restart after game over.</p>
+    <p class="help">Fly through the commit stream with arrow keys or WASD (or press/drag on the board). Green commits drift down; catch them before they pass. Hold Shift (or double-click/double-tap and hold) to sprint; collecting commits refills stamina. Esc pauses. Grab golden committed secrets before their fuse runs out, or they explode into bugs! Press Enter or Space to restart after game over.</p>
   </main>
   <script>
     const TIPS = [
@@ -77,7 +77,7 @@
       return { x: 16 + Math.floor(Math.random() * 32), y, text: "#" + number + " " + pick(PR_ACTIONS) + " " + pick(PR_SUBJECTS) };
     }
     function reset() {
-      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
+      state = { x: SIZE / 2, y: SIZE / 2, score: 0, time: 0, bugs: [], square: null, spawn: 1.5, over: false, paused: false, stamina: 1, sprinting: false, tipN: 0, secrets: [], blasts: [], secretTimer: SECRET_SPAWN_MIN, backgroundOffsets: [0, 0, 0], pullRequests: Array.from({ length: 5 }, (_, i) => newPullRequest(i * 100)) };
       state.square = newSquare();
       $("over").classList.remove("show");
       $("paused").classList.remove("show");
@@ -88,6 +88,7 @@
     function newSquare() {
       return { x: 30 + Math.random() * (SIZE - 60), y: -SQ };
     }
+    const SECRET_FUSE = 5, SECRET_R = 14, SECRET_BONUS = 3, SECRET_BURST = 12, SECRET_SPAWN_MIN = 15, SECRET_SPAWN_MAX = 30;
     const BUG_TYPES = {
       normal: { r: 12, speed: 1, color: "#f85149" },
       small: { r: 8, speed: 1.5, color: "#f0883e" },
@@ -145,16 +146,60 @@
         const bv = (45 + 25 * m) * bt.speed;
         b.x += (s.x - b.x) / d * bv * dt;
         b.y += (s.y - b.y) / d * bv * dt;
+        if (b.vx || b.vy) {
+          b.x += b.vx * dt; b.y += b.vy * dt;
+          const decay = Math.exp(-3 * dt);
+          b.vx *= decay; b.vy *= decay;
+        }
         if (d < MONA_R + bt.r - 4) return gameOver();
       }
+      updateSecrets(dt);
       if (Math.hypot(s.x - s.square.x, s.y - s.square.y) < MONA_R + SQ / 2) {
-        s.score++;
         s.stamina = Math.min(1, s.stamina + STAMINA_REFILL);
         s.square = newSquare();
-        if (s.score % 10 === 0) {
-          $("tip").textContent = "Copilot: " + TIPS[s.tipN++ % TIPS.length] + " (" + s.score + " points!)";
+        addScore(1);
+      }
+    }
+    function addScore(n) {
+      const s = state, before = Math.floor(s.score / 10);
+      s.score += n;
+      const after = Math.floor(s.score / 10);
+      if (after > before) {
+        $("tip").textContent = "Copilot: " + TIPS[s.tipN++ % TIPS.length] + " (" + s.score + " points!)";
+      }
+      updateHud();
+    }
+    function updateSecrets(dt) {
+      const s = state;
+      s.blasts = s.blasts.map((b) => ({ ...b, t: b.t + dt })).filter((b) => b.t < 0.5);
+      s.secretTimer -= dt;
+      if (s.secretTimer <= 0) {
+        s.secretTimer = SECRET_SPAWN_MIN + Math.random() * (SECRET_SPAWN_MAX - SECRET_SPAWN_MIN);
+        if (s.secrets.length === 0) {
+          for (let i = 0; i < 20; i++) {
+            const q = { x: 40 + Math.random() * (SIZE - 80), y: 40 + Math.random() * (SIZE - 80), age: 0 };
+            if (Math.hypot(q.x - s.x, q.y - s.y) > 100) { s.secrets.push(q); break; }
+          }
         }
-        updateHud();
+      }
+      const kept = [];
+      for (const q of s.secrets) {
+        if (Math.hypot(s.x - q.x, s.y - q.y) < MONA_R + SECRET_R) {
+          s.stamina = Math.min(1, s.stamina + STAMINA_REFILL);
+          addScore(SECRET_BONUS);
+          continue;
+        }
+        q.age += dt;
+        if (q.age >= SECRET_FUSE) { explodeSecret(q); continue; }
+        kept.push(q);
+      }
+      s.secrets = kept;
+    }
+    function explodeSecret(q) {
+      state.blasts.push({ x: q.x, y: q.y, t: 0 });
+      for (let i = 0; i < SECRET_BURST; i++) {
+        const a = Math.random() * Math.PI * 2, sp = 120 + Math.random() * 140;
+        state.bugs.push({ x: q.x, y: q.y, type: pickBugType(), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp });
       }
     }
     function gameOver() {
@@ -202,6 +247,21 @@
       ctx.fillStyle = "#3fb950"; ctx.shadowColor = "#3fb950"; ctx.shadowBlur = 10;
       ctx.fillRect(s.square.x - SQ / 2, s.square.y - SQ / 2, SQ, SQ);
       ctx.shadowBlur = 0;
+      for (const q of s.secrets) {
+        const left = Math.max(0, 1 - q.age / SECRET_FUSE), urgent = left < 0.4 && Math.floor(q.age * 8) % 2 === 0;
+        ctx.fillStyle = urgent ? "#ffdf5d" : "#d29922";
+        ctx.shadowColor = "#d29922"; ctx.shadowBlur = 12;
+        ctx.beginPath(); ctx.arc(q.x - 4, q.y, 8, 0, 7); ctx.fill();
+        ctx.fillRect(q.x + 2, q.y - 2.5, 12, 5); ctx.fillRect(q.x + 9, q.y, 3, 7);
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = "#0d1117"; ctx.beginPath(); ctx.arc(q.x - 4, q.y, 3, 0, 7); ctx.fill();
+        ctx.strokeStyle = urgent ? "#f85149" : "#ffdf5d"; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(q.x, q.y, SECRET_R + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * left); ctx.stroke();
+      }
+      for (const b of s.blasts) {
+        ctx.strokeStyle = "rgba(248,81,73," + (1 - b.t / 0.5) + ")"; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(b.x, b.y, 10 + b.t * 220, 0, 7); ctx.stroke();
+      }
       for (const b of s.bugs) {
         const bt = BUG_TYPES[b.type || "normal"], r = bt.r, k = r / BUG_R;
         ctx.fillStyle = bt.color;
